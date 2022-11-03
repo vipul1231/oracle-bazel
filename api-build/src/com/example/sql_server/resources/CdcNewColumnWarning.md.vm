@@ -1,0 +1,34 @@
+We detected some columns that are not present in your database’s CDC instance.
+We cannot sync the following columns until they are present in the CDC instance:
+
+| schema | table | columns |
+| ------ | ----- | --------- |
+#foreach ($warning in $warnings)
+| $warning.schema | $warning.table | $warning.columns |
+#end
+
+To include these columns, disable your current CDC instance and create a new one.
+Creating a new CDC instance will automatically schedule a re-sync of the table.
+
+Steps to disable current CDC instance:
+
+1. Select capture instance (i.e. column `capture_instance`) name for schema and table for the role name (i.e. example user) provided:
+```
+EXEC sys.sp_cdc_help_change_data_capture @source_schema = '<schema>', @source_name = 'test_table';
+```
+
+2. Query to disable current CDC instance:
+```
+    EXEC sys.sp_cdc_disable_table
+    @source_schema = [<schema>],
+    @source_name   = [<table>],
+    @capture_instance   = [<capture_instance>];
+```
+
+Query to create a new CDC instance:
+```
+    EXEC sys.sp_cdc_enable_table
+    @source_schema = [<schema>],
+    @source_name   = [<table>],
+    @role_name     = [<role>];
+```

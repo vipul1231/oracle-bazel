@@ -1,0 +1,1118 @@
+workspace(
+    name = "example",
+    managed_directories = {
+        "@client_npm": ["client/node_modules"],
+        "@contentful_apps_npm": ["contentful_apps/node_modules"],
+    },
+)
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file", "http_jar")
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "new_git_repository")
+
+http_archive(
+    name = "rules_proto",
+    sha256 = "602e7161d9195e50246177e7c55b2f39950a9cf7366f74ed5f22fd45750cd208",
+    strip_prefix = "rules_proto-97d8af4dc474595af3900dd85cb3a29ad28cc313",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_proto/archive/97d8af4dc474595af3900dd85cb3a29ad28cc313.tar.gz",
+        "https://github.com/bazelbuild/rules_proto/archive/97d8af4dc474595af3900dd85cb3a29ad28cc313.tar.gz",
+    ],
+)
+
+load("@rules_proto//proto:repositories.bzl", "rules_proto_dependencies", "rules_proto_toolchains")
+
+rules_proto_dependencies()
+
+rules_proto_toolchains()
+
+RULES_JVM_EXTERNAL_TAG = "4.1"
+
+RULES_JVM_EXTERNAL_SHA = "f36441aa876c4f6427bfb2d1f2d723b48e9d930b62662bf723ddfb8fc80f0140"
+
+http_archive(
+    name = "rules_jvm_external",
+    sha256 = RULES_JVM_EXTERNAL_SHA,
+    strip_prefix = "rules_jvm_external-%s" % RULES_JVM_EXTERNAL_TAG,
+    url = "https://github.com/bazelbuild/rules_jvm_external/archive/%s.zip" % RULES_JVM_EXTERNAL_TAG,
+)
+
+load("@rules_jvm_external//:defs.bzl", "maven_install")
+
+# Java tools javac11 10.6
+# https://github.com/bazelbuild/bazel/issues/13053#issuecomment-790408196
+#http_archive(
+#    name = "remote_java_tools_linux",
+#    sha256 = "085c0ba53ba764e81d4c195524f3c596085cbf9cdc01dd8e6d2ae677e726af35",
+#    urls = [
+#        "https://mirror.bazel.build/bazel_java_tools/releases/javac11/v10.6/java_tools_javac11_linux-v10.6.zip",
+#        "https://github.com/bazelbuild/java_tools/releases/download/javac11_v10.6/java_tools_javac11_linux-v10.6.zip",
+#    ],
+#)
+
+http_archive(
+    name = "remote_java_tools_darwin",
+    sha256 = "d15b05d2061382748f779dc566537ea567a46bcba6fa34b56d7cb6e6d668adab",
+    urls = [
+        "https://mirror.bazel.build/bazel_java_tools/releases/javac11/v10.6/java_tools_javac11_darwin-v10.6.zip",
+        "https://github.com/bazelbuild/java_tools/releases/download/javac11_v10.6/java_tools_javac11_darwin-v10.6.zip",
+    ],
+)
+
+# Zulu OpenJDK
+http_archive(
+    name = "openjdk11_linux_archive",
+    build_file_content = """
+java_runtime(name = 'runtime', srcs =  glob(['**']), visibility = ['//visibility:public'])
+exports_files(["WORKSPACE"], visibility = ["//visibility:public"])
+""",
+    sha256 = "0bd85593bae021314378f3b146cfe36a6c9b0afd964d897c34201034ace3e785",  # 11.45.27
+    #sha256 = "172449e998afbb59a961598330a3438dbe9f188910cdeb14d0a6457421541134", # 11.48.21
+    strip_prefix = "zulu11.45.27-ca-jdk11.0.10-linux_x64",
+    #strip_prefix = "zulu11.48.21-ca-jdk11.0.11-linux_x64",
+    urls = [
+        "https://cdn.azul.com/zulu/bin/zulu11.45.27-ca-jdk11.0.10-linux_x64.tar.gz",
+        #"https://cdn.azul.com/zulu/bin/zulu11.48.21-ca-jdk11.0.11-linux_x64.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "openjdk11_darwin_archive",
+    build_file_content = """
+java_runtime(name = 'runtime', srcs =  glob(['**']), visibility = ['//visibility:public'])
+exports_files(["WORKSPACE"], visibility = ["//visibility:public"])
+""",
+    sha256 = "d13f1fcc5ae3b51cc0bdcc627405aa5edd47f44ad0abf45dc7bc809c173a55a7",  # 11.45.27
+    #sha256 = "866b25c47aa3bedddc57fbe38fd7d2e0f888d314b85d1e88b2fb12100f3c166c", # 11.48.21
+    strip_prefix = "zulu11.45.27-ca-jdk11.0.10-macosx_x64",
+    #strip_prefix = "zulu11.48.21-ca-jdk11.0.11-macosx_x64",
+    urls = [
+        "https://cdn.azul.com/zulu/bin/zulu11.45.27-ca-jdk11.0.10-macosx_x64.tar.gz",
+        #"https://cdn.azul.com/zulu/bin/zulu11.48.21-ca-jdk11.0.11-macosx_x64.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "build_bazel_rules_nodejs",
+    sha256 = "0fa2d443571c9e02fcb7363a74ae591bdcce2dd76af8677a95965edf329d778a",
+    urls = ["https://github.com/bazelbuild/rules_nodejs/releases/download/3.6.0/rules_nodejs-3.6.0.tar.gz"],
+)
+
+load("@build_bazel_rules_nodejs//:index.bzl", "node_repositories", "yarn_install")
+
+node_repositories(
+    node_repositories = {
+        "14.15.4-darwin_amd64": ("node-v14.15.4-darwin-x64.tar.gz", "node-v14.15.4-darwin-x64", "6b0e19e5c2601ef97510f7eb4f52cc8ee261ba14cb05f31eb1a41a5043b0304e"),
+        "14.15.4-linux_amd64": ("node-v14.15.4-linux-x64.tar.xz", "node-v14.15.4-linux-x64", "ed01043751f86bb534d8c70b16ab64c956af88fd35a9506b7e4a68f5b8243d8a"),
+        "14.15.4-windows_amd64": ("node-v14.15.4-win-x64.zip", "node-v14.15.4-win-x64", "b2a0765240f8fbd3ba90a050b8c87069d81db36c9f3745aff7516e833e4d2ed6"),
+    },
+    node_version = "14.15.4",
+    package_json = [
+        "//client:package.json",
+        "//contentful_apps:package.json",
+    ],
+    yarn_repositories = {
+        "1.22.10": ("yarn-v1.22.10.tar.gz", "yarn-v1.22.10", "7e433d4a77e2c79e6a7ae4866782608a8e8bcad3ec6783580577c59538381a6e"),
+    },
+    yarn_version = "1.22.10",
+)
+
+yarn_install(
+    name = "client_npm",
+    data = [
+        "//client:.npmrc",
+        "//client:patches/react-static+7.5.3.patch",
+        "//client:patches/react-static-plugin-typescript+7.5.3.patch",
+        "//client:patches/react-universal-component+4.0.1.patch",
+        "//client:patches/react-virtualized+9.22.3.patch",
+        "//client:patches/webpack-flush-chunks+2.0.3.patch",
+        "//client:scripts/prepare.sh",
+    ],
+    exports_directories_only = True,
+    package_json = "//client:package.json",
+    yarn_lock = "//client:yarn.lock",
+)
+
+yarn_install(
+    name = "contentful_apps_npm",
+    data = [
+        "//contentful_apps:patches/react-static+7.5.3.patch",
+        "//contentful_apps:patches/react-universal-component+4.0.1.patch",
+        "//contentful_apps:scripts/prepare.sh",
+    ],
+    exports_directories_only = True,
+    package_json = "//contentful_apps:package.json",
+    yarn_lock = "//contentful_apps:yarn.lock",
+)
+
+http_archive(
+    name = "bazel_sonarqube",
+    sha256 = "2fbb1596fa7ef5e24fa2631f810a116de9513dda7d15ea96fb6f16319cd2e42d",
+    strip_prefix = "bazel-sonarqube-ab1774e5bbcbb602a956fb3b6215c81cbd716127",
+    url = "https://github.com/Zetten/bazel-sonarqube/archive/ab1774e5bbcbb602a956fb3b6215c81cbd716127.zip",
+)
+
+load("@bazel_sonarqube//:repositories.bzl", "bazel_sonarqube_repositories")
+
+bazel_sonarqube_repositories()
+
+# java_lite_proto_library rules implicitly depend on @com_google_protobuf_javalite//:javalite_toolchain,
+# which is the JavaLite proto runtime (base classes and common utilities).
+http_archive(
+    name = "com_google_protobuf_javalite",
+    sha256 = "311b29b8d0803ab4f89be22ff365266abb6c48fd3483d59b04772a144d7a24a1",
+    strip_prefix = "protobuf-7b64714af67aa967dcf941df61fe5207975966be",
+    urls = [
+        "https://github.com/google/protobuf/archive/7b64714af67aa967dcf941df61fe5207975966be.zip",
+    ],
+)
+
+# Golang (required by Buildifier and Docker)
+http_archive(
+    name = "io_bazel_rules_go",
+    sha256 = "7b9bbe3ea1fccb46dcfa6c3f3e29ba7ec740d8733370e21cdc8937467b4a4349",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.22.4/rules_go-v0.22.4.tar.gz",
+        "https://github.com/bazelbuild/rules_go/releases/download/v0.22.4/rules_go-v0.22.4.tar.gz",
+    ],
+)
+
+load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
+
+go_rules_dependencies()
+
+go_register_toolchains()
+
+# Buildifier
+http_archive(
+    name = "com_github_bazelbuild_buildtools",
+    sha256 = "15146c8e0f3cb9605339a4b0fe2b0e33ee67fec47e6b55d1b39c0de7ccede6fd",
+    strip_prefix = "buildtools-2.2.1",
+    urls = ["https://github.com/bazelbuild/buildtools/archive/2.2.1.zip"],
+)
+
+load("@com_github_bazelbuild_buildtools//buildifier:deps.bzl", "buildifier_dependencies")
+
+buildifier_dependencies()
+
+# Docker
+http_archive(
+    name = "io_bazel_rules_docker",
+    sha256 = "4521794f0fba2e20f3bf15846ab5e01d5332e587e9ce81629c7f96c793bb7036",
+    strip_prefix = "rules_docker-0.14.4",
+    urls = ["https://github.com/bazelbuild/rules_docker/releases/download/v0.14.4/rules_docker-v0.14.4.tar.gz"],
+)
+
+load(
+    "@io_bazel_rules_docker//repositories:repositories.bzl",
+    container_repositories = "repositories",
+)
+
+container_repositories()
+
+load("@io_bazel_rules_docker//repositories:deps.bzl", container_deps = "deps")
+
+container_deps()
+
+#load("@io_bazel_rules_docker//repositories:pip_repositories.bzl", "pip_deps")
+
+#pip_deps()
+
+load(
+    "@io_bazel_rules_docker//container:container.bzl",
+    "container_image",
+    "container_pull",
+    "container_push",
+)
+
+container_pull(
+    name = "java_8_base",
+    registry = "gcr.io/example-donkeys",
+    repository = "openjdk",
+    tag = "8u242",
+)
+
+container_pull(
+    name = "java_8_base_lite",
+    registry = "gcr.io/example-donkeys",
+    repository = "openjdk",
+    tag = "8u242-jre-slim",
+)
+
+container_pull(
+    name = "java_11_base",
+    registry = "gcr.io",
+    repository = "example-donkeys/zulu-openjdk",
+    tag = "11.0.10",
+)
+
+load(
+    "@io_bazel_rules_docker//java:image.bzl",
+    _java_image_repos = "repositories",
+)
+
+_java_image_repos()
+
+# NodeJS base container
+container_pull(
+    name = "node_14_base",
+    digest = "sha256:51e341881c2b77e52778921c685e711a186a71b8c6f62ff2edfc6b6950225a2f",
+    registry = "index.docker.io",
+    repository = "node",
+    tag = "14.15.4-alpine",
+)
+
+# Nginx with brotli base container
+container_pull(
+    name = "nginx_brotli_base",
+    digest = "sha256:e408e618224c941204f8808e4f0c821a8c823a95adb735a4d1c15cd472f69c30",
+    registry = "index.docker.io",
+    repository = "macbre/nginx-brotli",
+    tag = "1.19.6",
+)
+
+# image for pull testing through bazel
+container_pull(
+    name = "hello_world",
+    registry = "gcr.io/example-donkeys",
+    repository = "hello-world",
+)
+
+# Pkg rules init
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "rules_pkg",
+    sha256 = "352c090cc3d3f9a6b4e676cf42a6047c16824959b438895a76c2989c6d7c246a",
+    url = "https://github.com/bazelbuild/rules_pkg/releases/download/0.2.5/rules_pkg-0.2.5.tar.gz",
+)
+
+load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
+
+rules_pkg_dependencies()
+# Pkg rules init end
+
+http_archive(
+    name = "mysql_binlog_connector",
+    build_file_content = """
+java_library(
+    name = "main",
+    srcs = glob(["src/main/java/**/*.java"]),
+    deps = [
+        "@maven//:com_sun_xml_bind_jaxb_core",
+        "@maven//:com_sun_xml_bind_jaxb_impl",
+        "@maven//:javax_xml_bind_jaxb_api",
+    ],
+    javacopts = ["-XepDisableAllChecks"],
+    visibility = ["//visibility:public"],
+)
+
+# TODO make this work
+# java_test(
+#     name = "tests",
+#     srcs = glob(["src/test/java/**/*.java"]),
+#     test_class = "com.fasterxml.jackson.module.jsonSchema.AllTests",
+#     deps = [
+#         ":main",
+#         "@maven//:junit_junit",
+#         "@maven//:org_testng_testng",
+#         "@maven//:org_skyscreamer_jsonassert",
+#         "@maven//:org_mockito_mockito_core",
+#         "@maven//:mysql_mysql_connector_java",
+#     ],
+# )
+""",
+    sha256 = "884b56f9933a05271b672578f8060556453dbb7fe53531d5076fbccd2fbbafc8",
+    strip_prefix = "mysql-binlog-connector-java-0.21.0-1-example",
+    url = "https://github.com/example/mysql-binlog-connector-java/archive/0.21.0-1-example.tar.gz",
+)
+
+# WARNING: @example_amazon_kinesis_client may need work if you upgrade AWS
+http_archive(
+    name = "example_amazon_kinesis_client",
+    build_file_content = """
+java_library(
+    name = "main",
+    srcs = glob(["src/main/java/**/*.java"]),
+    deps = [
+            "@maven//:com_amazonaws_aws_java_sdk_cloudwatch",
+            "@maven//:com_amazonaws_aws_java_sdk_core",
+            "@maven//:com_amazonaws_aws_java_sdk_dynamodb",
+            "@maven//:com_amazonaws_aws_java_sdk_kinesis",
+            "@maven//:com_amazonaws_aws_java_sdk_kms",
+            "@maven//:com_amazonaws_aws_java_sdk_s3",
+            "@maven//:com_amazonaws_jmespath_java",
+            "@maven//:com_fasterxml_jackson_core_jackson_annotations",
+            "@maven//:com_fasterxml_jackson_core_jackson_core",
+            "@maven//:com_fasterxml_jackson_core_jackson_databind",
+            "@maven//:com_fasterxml_jackson_dataformat_jackson_dataformat_cbor",
+            "@maven//:com_google_guava_guava",
+            "@maven//:com_google_protobuf_protobuf_java",
+            "@maven//:commons_codec_commons_codec",
+            "@maven//:commons_lang_commons_lang",
+            "@maven//:commons_logging_commons_logging",
+            "@maven//:joda_time_joda_time",
+            "@maven//:org_apache_commons_commons_lang3",
+            "@maven//:org_apache_httpcomponents_httpclient",
+            "@maven//:org_apache_httpcomponents_httpcore",
+            "@maven//:software_amazon_ion_ion_java",
+            "@maven//:com_sun_xml_bind_jaxb_core",
+            "@maven//:com_sun_xml_bind_jaxb_impl",
+            "@maven//:javax_xml_bind_jaxb_api",
+    ],
+    javacopts = ["-XepDisableAllChecks"],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "14327323f878f6e721853a7d1c3f8680d65bb2ea6b74607903e591667d5e16fd",
+    strip_prefix = "amazon-kinesis-client-1.9.3-23-example",
+    url = "https://github.com/example/amazon-kinesis-client/archive/1.9.3-23-example.tar.gz",
+)
+
+http_archive(
+    name = "jsch_patched",
+    build_file_content = """
+java_library(
+    name = "main",
+    srcs = glob(["src/main/java/com/jcraft/jsch/**/*.java"]),
+    deps = [
+        "@maven//:com_jcraft_jzlib",
+    ],
+    javacopts = ["-Xep:FallThrough:WARN -XepDisableAllChecks"],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "35b7f01a837375e40a4f5892ac005eb9b0e3a013574eb1e0604522835f118450",
+    strip_prefix = "jsch-0.1.54-0.1.3",
+    url = "https://github.com/example/jsch/archive/0.1.54-0.1.3.tar.gz",
+)
+
+http_jar(
+    name = "redshift_jdbc42",
+    sha256 = "685dd410f273ba3310646dc7ea3d74268ed51bb3646780f62b6f634c0ef9926b",
+    url = "https://s3.amazonaws.com/redshift-downloads/drivers/jdbc/1.2.43.1067/RedshiftJDBC42-no-awssdk-1.2.43.1067.jar",
+)
+
+http_file(
+    name = "opentelemetry_javaagent",
+    downloaded_file_path = "opentelemetry-javaagent-all.jar",
+    sha256 = "094b1879cbabb837c9b8b8fdbda0a5907174fc923ec966c2635276724f9d3fe1",
+    urls = ["https://repo1.maven.org/maven2/io/opentelemetry/javaagent/opentelemetry-javaagent/0.13.1/opentelemetry-javaagent-0.13.1-all.jar"],
+)
+
+http_file(
+    name = "opentelemetry_newrelic_exporter",
+    downloaded_file_path = "opentelemetry-exporters-newrelic-auto.jar",
+    sha256 = "835a903481991f0e887bb246344807109cb37b07d4c8f54ec15f7b9a20ba5df6",
+    urls = ["https://repo1.maven.org/maven2/com/newrelic/telemetry/opentelemetry-exporters-newrelic-auto/0.13.1/opentelemetry-exporters-newrelic-auto-0.13.1.jar"],
+)
+
+# Using a fork of this lib so we can limit the max field size when decoding csv data from postgres (saving on memory)
+http_archive(
+    name = "com_fasterxml_jackson_dataformat_jackson_dataformat_csv",
+    build_file_content = """
+java_library(
+    name = "main",
+    srcs = glob(["src/main/java/**/*.java"]),
+    deps = [
+        "@maven//:com_fasterxml_jackson_core_jackson_annotations",
+        "@maven//:com_fasterxml_jackson_core_jackson_core",
+        "@maven//:com_fasterxml_jackson_core_jackson_databind",
+    ],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "f72b013444d9749e421caa72a191500912c72bed62beb8b624ae6f226f2daf1b",
+    strip_prefix = "jackson-dataformats-text-2.9.8-3-example/csv",
+    urls = ["https://github.com/FasterXML/jackson-dataformats-text/archive/2.9.8-3-example.tar.gz"],
+)
+
+new_git_repository(
+    name = "com_google_cloud_google_cloud_bigquerydatatransfer",
+    build_file_content = """
+java_library(
+    name = "main",
+    srcs = glob([
+        "gapic-google-cloud-bigquerydatatransfer-v1/src/main/java/**/*.java",
+        "grpc-google-cloud-bigquerydatatransfer-v1/src/main/java/**/*.java",
+        "proto-google-cloud-bigquerydatatransfer-v1/src/main/java/**/*.java",
+    ]),
+    visibility = ["//visibility:public"],
+    deps = [
+        "@maven//:com_google_api_api_common",
+        "@maven//:com_google_api_gax",
+        "@maven//:com_google_api_gax_grpc",
+        "@maven//:com_google_api_grpc_proto_google_common_protos",
+        "@maven//:com_google_guava_guava",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_protobuf",
+        "@maven//:io_grpc_grpc_stub",
+        "@maven//:org_threeten_threetenbp",
+        "@maven//:javax_annotation_javax_annotation_api"
+    ]
+)
+""",
+    commit = "1d0a2fcdf89868d4fd2a8f3f2431d399346c19b3",
+    remote = "https://github.com/cmm08/bq-dts-partner-clients.git",
+    shallow_since = "1575591250 -0800",
+)
+
+load("@rules_jvm_external//:specs.bzl", "maven")
+
+maven_install(
+    name = "maven",
+    artifacts = [
+        "com.oracle.database.jdbc:ojdbc8-production:19.7.0.0",
+        "com.google.guava:guava:r05",
+        "junit:junit:4.11",
+        "commons-codec:commons-codec:1.15",
+        "io.micrometer:micrometer-core:1.7.3",
+        "io.opentelemetry:opentelemetry-api:1.4.1",
+        "io.opentelemetry:opentelemetry-extension-annotations:1.4.1",
+        "com.fasterxml.jackson.core:jackson-databind:2.13.0-rc1",
+        "org.mockito:mockito-core:3.11.2",
+        #        "org.awaitility:awaitility:4.1.0",
+        "com.microsoft.sqlserver:mssql-jdbc:9.4.0.jre8",
+        "org.hamcrest:hamcrest-all:1.3",
+        "net.snowflake:snowflake-jdbc:3.13.14",
+        "org.json:json:20211205",
+        "com.fasterxml.jackson.core:jackson-annotations:2.13.1",
+        "com.oracle.database.jdbc:ojdbc8-production:19.7.0.0",
+        "com.github.vincentrussell:json-data-generator:1.12",
+        "org.glassfish.jersey.core:jersey-common:3.0.2",
+        "org.postgresql:postgresql:42.2.23",
+        "aopalliance:aopalliance:1.0",
+        "org.projectlombok:lombok:1.18.20",
+        "org.apache.logging.log4j:log4j-api:2.6.1",
+        "org.apache.logging.log4j:log4j-core:2.6.1",
+        "com.amazonaws:amazon-kinesis-client:1.13.0",
+        "com.amazonaws:aws-encryption-sdk-java:1.6.1",
+        "com.amazonaws:aws-java-sdk-cloudtrail:1.11.438",
+        "com.amazonaws:aws-java-sdk-cloudwatch:1.11.438",
+        "com.amazonaws:aws-java-sdk-config:1.11.438",
+        "com.amazonaws:aws-java-sdk-core:1.11.438",
+        "com.amazonaws:aws-java-sdk-dynamodb:1.11.438",
+        "com.amazonaws:aws-java-sdk-ec2:1.11.439",
+        "com.amazonaws:aws-java-sdk-elasticloadbalancing:1.11.438",
+        "com.amazonaws:aws-java-sdk-elasticloadbalancingv2:1.11.438",
+        "com.amazonaws:aws-java-sdk-glue:1.11.438",
+        "com.amazonaws:aws-java-sdk-iam:1.11.438",
+        "com.amazonaws:aws-java-sdk-kinesis:1.11.438",
+        "com.amazonaws:aws-java-sdk-redshift:1.11.438",
+        "com.amazonaws:aws-java-sdk-kms:1.11.438",
+        "com.amazonaws:aws-java-sdk-lambda:1.11.438",
+        "com.amazonaws:aws-java-sdk-logs:1.11.438",
+        "com.amazonaws:aws-java-sdk-resourcegroupstaggingapi:1.11.400",
+        "com.amazonaws:aws-java-sdk-s3:1.11.438",
+        "com.amazonaws:aws-java-sdk-ses:1.11.438",
+        "com.amazonaws:aws-java-sdk-sts:1.11.438",
+        "com.amazonaws:dynamodb-streams-kinesis-adapter:1.4.0",
+        "com.amazonaws:jmespath-java:1.11.91",
+        "com.azure:azure-messaging-eventhubs:5.0.1",
+        "com.blueconic:browscap-java:1.2.13",
+        "com.braintreepayments.gateway:braintree-java:2.108.0",
+        "com.cronutils:cron-utils:9.0.2",
+        "com.codahale.metrics:metrics-annotation:3.0.2",
+        "com.dropbox.core:dropbox-core-sdk:4.0.0",
+        "com.fasterxml.jackson.core:jackson-annotations:2.9.8",
+        "com.fasterxml.jackson.core:jackson-core:2.9.8",
+        "com.fasterxml.jackson.core:jackson-databind:2.9.8",
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.9.8",
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-smile:2.9.8",
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-xml:2.9.8",
+        "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.9.8",
+        "com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.9.8",
+        "com.fasterxml.jackson.datatype:jackson-datatype-joda:2.9.8",
+        "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.9.8",
+        "com.fasterxml.jackson.jaxrs:jackson-jaxrs-base:2.9.8",
+        "com.fasterxml.jackson.jaxrs:jackson-jaxrs-json-provider:2.9.8",
+        "com.fasterxml.jackson.jaxrs:jackson-jaxrs-xml-provider:2.9.8",
+        "com.fasterxml.jackson.module:jackson-module-jaxb-annotations:2.9.8",
+        "com.fasterxml.util:java-merge-sort:1.0.0",
+        "com.fasterxml.woodstox:woodstox-core:5.0.3",
+        "com.github.dfabulich:sitemapgen4j:1.0.6",
+        "com.github.tomakehurst:wiremock-jre8-standalone:2.27.2",
+        "com.github.ua-parser:uap-java:1.4.0",
+        "com.google.api-ads:ads-lib-axis:4.4.0",
+        "com.google.api-ads:ads-lib:4.4.0",
+        "com.google.api-ads:adwords-axis:4.4.0",
+        "com.google.api-ads:google-ads:12.0.0",
+        "com.google.api-client:google-api-client:1.31.1",
+        "com.google.api.grpc:proto-google-cloud-billingbudgets-v1:1.1.0",
+        "com.google.api.grpc:proto-google-cloud-datastore-v1:0.54.0",
+        "com.google.api.grpc:proto-google-cloud-firestore-admin-v1:1.10.0",
+        "com.google.api.grpc:proto-google-cloud-firestore-v1:1.10.0",
+        "com.google.api.grpc:proto-google-cloud-firestore-v1beta1:0.63.0",
+        "com.google.api.grpc:proto-google-cloud-kms-v1:0.61.0",
+        "com.google.api.grpc:proto-google-cloud-logging-v2:0.2.1",
+        "com.google.api.grpc:proto-google-cloud-monitoring-v3:1.75.0",
+        "com.google.api.grpc:proto-google-cloud-pubsub-v1:1.93.4",
+        "com.google.api.grpc:proto-google-common-protos:1.15.0",
+        "com.google.api.grpc:proto-google-iam-v1:0.13.0",
+        "com.google.api:api-common:1.9.0",
+        "com.google.api:gax-grpc:1.60.1",
+        "com.google.api:gax-httpjson:0.42.0",
+        "com.google.api:gax:1.60.1",
+        "com.google.apis:google-api-services-analytics:v3-rev141-1.22.0",
+        "com.google.apis:google-api-services-bigquery:v2-rev459-1.25.0",
+        "com.google.apis:google-api-services-cloudbilling:v1-rev9-1.22.0",
+        "com.google.apis:google-api-services-cloudbuild:v1-rev836-1.25.0",
+        "com.google.apis:google-api-services-cloudresourcemanager:v1-rev495-1.23.0",
+        "com.google.apis:google-api-services-iam:v1-rev193-1.22.0",
+        "com.google.apis:google-api-services-servicemanagement:v1-rev435-1.23.0",
+        "com.google.apis:google-api-services-serviceusage:v1beta1-rev20210427-1.31.0",
+        "com.google.apis:google-api-services-sheets:v4-rev581-1.25.0",
+        "com.google.apis:google-api-services-storage:v1-rev20200326-1.30.9",
+        "com.google.auth:google-auth-library-credentials:0.9.1",
+        "com.google.auth:google-auth-library-oauth2-http:0.22.0",
+        "com.google.cloud.datastore:datastore-v1-proto-client:1.6.0",
+        "com.google.cloud:google-cloud-bigquery:1.48.0",
+        "com.google.cloud:google-cloud-billingbudgets:1.1.0",
+        "com.google.cloud:google-cloud-core-grpc:1.19.0",
+        "com.google.cloud:google-cloud-core-http:1.48.0",
+        "com.google.cloud:google-cloud-core:1.48.0",
+        "com.google.cloud:google-cloud-datastore:1.70.0",
+        "com.google.cloud:google-cloud-firestore:1.10.0",
+        "com.google.cloud:google-cloud-kms:1.13.0",
+        "com.google.cloud:google-cloud-logging:1.19.0",
+        "com.google.cloud:google-cloud-monitoring:1.93.0",
+        "com.google.cloud:google-cloud-pubsub:1.59.0",
+        "com.google.cloud:google-cloud-storage:1.108.0",
+        "com.google.code.findbugs:jsr305:3.0.2",
+        "com.google.code.gson:gson:2.7",
+        "com.googlecode.objectify:objectify:6.0.6",
+        "com.google.guava:guava-jdk5:17.0",
+        "com.google.guava:guava:25.1-jre",
+        "com.google.apis:google-api-services-drive:v3-rev197-1.25.0",
+        "com.google.http-client:google-http-client-apache:2.1.0",
+        "com.google.http-client:google-http-client-appengine:1.23.0",
+        "com.google.http-client:google-http-client-jackson2:1.35.0",
+        "com.google.http-client:google-http-client-jackson:1.23.0",
+        "com.google.http-client:google-http-client-protobuf:1.29.1",
+        "com.google.http-client:google-http-client:1.39.2",
+        "com.google.inject.extensions:guice-assistedinject:4.0",
+        "com.google.inject.extensions:guice-multibindings:4.0",
+        "com.google.inject:guice:4.0",
+        "com.google.instrumentation:instrumentation-api:0.4.3",
+        "com.google.oauth-client:google-oauth-client:1.23.0",
+        "com.google.oauth-client:google-oauth-client-jetty:1.23.0",
+        "com.google.protobuf:protobuf-java-util:3.6.0",
+        "com.google.protobuf:protobuf-java:3.6.0",
+        "com.google.testing.compile:compile-testing:0.18",
+        "com.hubspot.jinjava:jinjava:2.5.6",
+        "com.ibm.icu:icu4j:62.1",
+        "com.ibm.db2:jcc:11.5.0.0",
+        "com.intellij:annotations:12.0",
+        "com.jcraft:jzlib:1.1.3",
+        "com.lambdaworks:scrypt:1.4.0",
+        "com.maxmind.db:maxmind-db:1.2.2",
+        "com.maxmind.geoip2:geoip2:2.9.0",
+        "com.mchange:c3p0:0.9.5.1",
+        "com.mchange:mchange-commons-java:0.2.10",
+        "com.microsoft.azure:adal4j:1.6.3",
+        "com.microsoft.azure:azure-core:0.9.3",
+        "com.microsoft.azure:azure-keyvault:1.0.0",
+        "com.microsoft.azure:azure-storage:8.6.3",
+        "com.microsoft.bingads:microsoft.bingads:12.0.3",
+        "com.microsoft.sqlserver:mssql-jdbc:7.4.1.jre8",
+        "com.nimbusds:lang-tag:1.4.3",
+        "com.nimbusds:nimbus-jose-jwt:5.5",
+        "com.nimbusds:oauth2-oidc-sdk:5.64.4",
+        "com.okta.commons:okta-commons-lang:1.2.1",
+        "com.okta.commons:okta-config-check:1.2.1",
+        "com.okta.jwt:okta-jwt-verifier-impl:0.4.0",
+        "com.okta.jwt:okta-jwt-verifier:0.4.0",
+        "com.opencsv:opencsv:4.1",
+        "com.sendwithus:java-client:2.0.0",
+        "com.snowplowanalytics:referer-parser_2.11:0.3.0",
+        "com.sparkjava:spark-core:2.9.1",
+        "com.squareup.okhttp3:okhttp:3.11.0",
+        "com.squareup.okhttp:logging-interceptor:2.7.5",
+        "com.squareup.okhttp:okhttp:2.7.5",
+        "com.squareup.okio:okio:1.13.0",
+        "com.stripe:stripe-java:19.20.0",
+        "com.sun.jersey:jersey-client:1.13",
+        "com.sun.jersey:jersey-core:1.13",
+        "com.sun.jersey:jersey-json:1.13",
+        "com.sun.mail:javax.mail:1.5.4",
+        "com.sun.org.apache.xml.internal:resolver:20050927",
+        "com.sun.xml.bind:jaxb-core:2.2.11",
+        "com.sun.xml.bind:jaxb-impl:2.2.11",
+        "com.sun.xml.fastinfoset:FastInfoset:1.2.13",
+        "com.sun.xml.messaging.saaj:saaj-impl:1.3.25",
+        "com.sun.xml.stream.buffer:streambuffer:1.5.3",
+        "com.sun.xml.ws:jaxws-rt:2.2.10",
+        "com.sun.xml.ws:policy:2.4",
+        "com.thoughtworks.paranamer:paranamer:2.7",
+        "com.zaxxer:HikariCP:3.4.1",
+        "commons-beanutils:commons-beanutils:1.9.2",
+        "commons-codec:commons-codec:1.10",
+        "commons-collections:commons-collections:3.2.2",
+        "commons-configuration:commons-configuration:1.10",
+        "commons-discovery:commons-discovery:0.5",
+        "commons-httpclient:commons-httpclient:3.1",
+        "commons-io:commons-io:2.4",
+        "commons-lang:commons-lang:2.6",
+        "commons-logging:commons-logging:1.2",
+        "commons-net:commons-net:3.3",
+        "gnu.getopt:java-getopt:1.0.13",
+        "info.picocli:picocli:4.5.1",
+        "io.airlift:aircompressor:0.9",
+        "io.confluent:kafka-schema-registry-client:5.5.1",
+        "io.confluent:kafka-protobuf-provider:5.5.1",
+        "io.confluent:kafka-protobuf-serializer:5.5.1",
+        "io.confluent:kafka-schema-serializer:5.5.1",
+        "io.dropwizard.metrics:metrics-core:3.1.2",
+        "io.grpc:grpc-api:1.32.2",
+        "io.grpc:grpc-auth:1.32.2",
+        "io.grpc:grpc-context:1.32.2",
+        "io.grpc:grpc-core:1.32.2",
+        "io.grpc:grpc-netty-shaded:1.32.2",
+        "io.grpc:grpc-netty:1.32.2",
+        "io.grpc:grpc-protobuf-lite:1.32.2",
+        "io.grpc:grpc-protobuf:1.32.2",
+        "io.grpc:grpc-stub:1.32.2",
+        "io.jsonwebtoken:jjwt:0.9.0",
+        "io.kubernetes:client-java-api:3.0.0-beta2",
+        "io.kubernetes:client-java-proto:3.0.0",
+        "io.kubernetes:client-java:3.0.0-beta2",
+        "io.netty:netty-all:4.1.45.Final",
+        "io.netty:netty-buffer:4.1.50.Final",
+        "io.netty:netty-codec-http2:4.1.45.Final",
+        "io.netty:netty-codec-http:4.1.45.Final",
+        "io.netty:netty-codec:4.1.45.Final",
+        "io.netty:netty-common:4.1.45.Final",
+        "io.netty:netty-handler:4.1.45.Final",
+        "io.netty:netty-resolver:4.1.45.Final",
+        "io.netty:netty-tcnative-boringssl-static:2.0.28.Final",
+        "io.netty:netty-transport:4.1.45.Final",
+        "io.opencensus:opencensus-api:0.12.3",
+        "io.opencensus:opencensus-contrib-grpc-metrics:0.11.0",
+        "io.opencensus:opencensus-contrib-http-util:0.11.1",
+        "io.sundr:builder-annotations:0.8.0",
+        "io.sundr:sundr-core:0.8.0",
+        "io.swagger:swagger-annotations:1.6.0",
+        "io.swagger:swagger-jaxrs:1.6.0",
+        "it.unimi.dsi:fastutil:8.1.0",
+        "jakarta.annotation:jakarta.annotation-api:1.3.5",
+        "javax.activation:activation:1.1",
+        "javax.jws:jsr181-api:1.0-MR1",
+        "javax.mail:javax.mail-api:1.5.4",
+        "javax.mail:mail:1.4.5",
+        "javax.resource:javax.resource-api:1.7.1",
+        "javax.servlet:javax.servlet-api:3.1.0",
+        "javax.validation:validation-api:1.1.0.Final",
+        "javax.websocket:javax.websocket-api:1.1",
+        "javax.xml.bind:jaxb-api:2.2.2",
+        "javax.xml.soap:javax.xml.soap-api:1.4.0",
+        "javax.xml.stream:stax-api:1.0-2",
+        "javax.xml.ws:jaxws-api:2.2.11",
+        "javax.xml:jaxrpc-api:1.1",
+        "joda-time:joda-time:2.9.2",
+        "junit:junit:4.13",
+        "log4j:log4j:1.2.17",
+        "me.xdrop:fuzzywuzzy:1.2.0",
+        "net.agkn:hll:1.6.0",
+        # After upgrading byte-buddy-agent library you should also upgrade that
+        # in folder _external/jars and file .circleci/.bazelrc
+        "net.bytebuddy:byte-buddy-agent:1.10.14",
+        "net.bytebuddy:byte-buddy:1.10.14",
+        "net.jcip:jcip-annotations:1.0",
+        "net.jqwik:jqwik:1.2.3",
+        "net.lingala.zip4j:zip4j:1.3.2",
+        "net.minidev:json-smart:2.3",
+        "net.sf.jopt-simple:jopt-simple:5.0.4",
+        "net.sf.opencsv:opencsv:1.8",
+        "net.shibboleth.utilities:java-support:7.3.0",
+        "org.apache.avro:avro:1.8.2",
+        "org.apache.axis:axis:1.4",
+        "org.apache.commons:commons-compress:1.8",
+        "org.apache.commons:commons-csv:1.8",
+        "org.apache.commons:commons-lang3:3.3.1",
+        "org.apache.commons:commons-math3:3.6.1",
+        "org.apache.cxf:cxf-rt-frontend-jaxws:3.2.14",
+        "org.apache.cxf:cxf-rt-transports-http:3.2.14",
+        "org.apache.httpcomponents:httpasyncclient:4.1.4",
+        "org.apache.httpcomponents:httpclient-cache:4.5.13",
+        "org.apache.httpcomponents:httpclient:4.5.13",
+        "org.apache.httpcomponents:httpcore-nio:4.4.13",
+        "org.apache.httpcomponents:httpcore:4.4.13",
+        "org.apache.httpcomponents:httpmime:4.5.13",
+        "org.hdrhistogram:HdrHistogram:2.1.10",
+        "org.apache.httpcomponents:httpclient:4.5.12",
+        "org.apache.httpcomponents:httpcore:4.4.13",
+        "org.apache.httpcomponents:httpmime:4.5.12",
+        "org.apache.jmeter:jorphan:4.0",
+        "org.apache.jmeter:ApacheJMeter_java:4.0",
+        "org.apache.jmeter:ApacheJMeter_config:4.0",
+        "org.apache.jmeter:ApacheJMeter_core:4.0",
+        "org.apache.jmeter:ApacheJMeter_http:4.0",
+        "org.apache.jmeter:ApacheJMeter_components:4.0",
+        "org.apache.kafka:kafka-clients:2.1.0",
+        "org.apache.poi:poi:3.17",
+        "org.apache.poi:poi-ooxml:3.17",
+        "org.apache.logging.log4j:log4j-slf4j-impl:2.1",
+        "org.apache.logging.log4j:log4j-api:2.1",
+        "org.apache.logging.log4j:log4j-core:2.1",
+        "org.apache.parquet:parquet-avro:1.10.0",
+        "org.apache.parquet:parquet-column:1.10.0",
+        "org.apache.parquet:parquet-common:1.10.0",
+        "org.apache.parquet:parquet-encoding:1.10.0",
+        "org.apache.parquet:parquet-format:2.4.0",
+        "org.apache.parquet:parquet-hadoop:1.10.0",
+        "org.apache.santuario:xmlsec:2.1.1",
+        "org.apache.velocity:velocity:1.7",
+        "org.awaitility:awaitility:4.0.3",
+        "org.assertj:assertj-core:3.14.0",
+        "org.bouncycastle:bcpkix-jdk15on:1.54",
+        "org.bouncycastle:bcprov-jdk15to18:1.68",
+        "org.codehaus.jackson:jackson-core-asl:1.9.13",
+        "org.codehaus.jackson:jackson-jaxrs:1.9.13",
+        "org.codehaus.jackson:jackson-mapper-asl:1.9.13",
+        "org.codehaus.jackson:jackson-xc:1.9.13",
+        "org.codehaus.jettison:jettison:1.1",
+        "org.codehaus.woodstox:stax2-api:3.1.4",
+        "org.codehaus.woodstox:woodstox-core-asl:4.2.0",
+        "org.cryptacular:cryptacular:1.1.1",
+        "org.eclipse.jetty.websocket:javax-websocket-client-impl:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:javax-websocket-server-impl:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:websocket-api:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:websocket-client:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:websocket-common:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:websocket-server:9.4.40.v20210413",
+        "org.eclipse.jetty.websocket:websocket-servlet:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-annotations:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-client:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-continuation:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-http:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-io:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-jndi:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-plus:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-security:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-server:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-servlet:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-servlets:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-util:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-webapp:9.4.40.v20210413",
+        "org.eclipse.jetty:jetty-xml:9.4.40.v20210413",
+        "org.eclipse.mylyn.github:org.eclipse.egit.github.core:5.5.0.201909110433-r",
+        "org.eclipse.persistence:org.eclipse.persistence.asm:2.7.4",
+        "org.eclipse.persistence:org.eclipse.persistence.core:2.7.4",
+        "org.eclipse.persistence:org.eclipse.persistence.moxy:2.7.4",
+        "org.fusesource.leveldbjni:leveldbjni-all:1.8",
+        "org.glassfish.external:management-api:3.0.0-b012",
+        "org.glassfish.gmbal:gmbal-api-only:3.1.0-b001",
+        "org.glassfish.ha:ha-api:3.1.9",
+        "org.glassfish.hk2.external:aopalliance-repackaged:2.6.1",
+        "org.glassfish.hk2.external:jakarta.inject:2.6.1",
+        "org.glassfish.hk2:hk2-api:2.6.1",
+        "org.glassfish.hk2:hk2-locator:2.6.1",
+        "org.glassfish.hk2:hk2-utils:2.6.1",
+        "org.glassfish.hk2:osgi-resource-locator:1.0.3",
+        "org.glassfish.jersey.connectors:jersey-apache-connector:2.31",
+        "org.glassfish.jersey.containers:jersey-container-servlet-core:2.31",
+        "org.glassfish.jersey.containers:jersey-container-servlet:2.31",
+        "org.glassfish.jersey.core:jersey-client:2.31",
+        "org.glassfish.jersey.core:jersey-common:2.31",
+        "org.glassfish.jersey.core:jersey-server:2.31",
+        "org.glassfish.jersey.ext:jersey-bean-validation:2.31",
+        "org.glassfish.jersey.ext:jersey-entity-filtering:2.31",
+        "org.glassfish.jersey.ext:jersey-metainf-services:2.31",
+        "org.glassfish.jersey.inject:jersey-hk2:2.31",
+        "org.glassfish.jersey.media:jersey-media-jaxb:2.31",
+        "org.glassfish.jersey.media:jersey-media-json-jackson:2.31",
+        "org.glassfish.jersey.media:jersey-media-moxy:2.31",
+        "org.glassfish.jersey.media:jersey-media-multipart:2.31",
+        "org.glassfish.jersey.media:jersey-media-sse:2.31",
+        "org.glassfish.jersey.security:oauth1-client:2.31",
+        "org.glassfish.jersey.security:oauth1-signature:2.31",
+        "org.hamcrest:hamcrest:2.2",
+        "org.hamcrest:hamcrest-core:2.2",
+        "org.hibernate:hibernate-validator:5.4.3.Final",
+        "org.javassist:javassist:3.21.0-GA",
+        "org.jdom:jdom:1.1.3",
+        "org.jetbrains.kotlin:kotlin-stdlib:1.3.50",
+        "org.json:json:20171018",
+        "org.jsoup:jsoup:1.8.2",
+        "org.junit.jupiter:junit-jupiter-api:5.6.0",
+        "org.junit.jupiter:junit-jupiter-engine:5.6.0",
+        "org.junit.jupiter:junit-jupiter-params:5.6.0",
+        "org.junit.jupiter:junit-jupiter:5.6.0",
+        "org.junit.platform:junit-platform-console:1.6.0",
+        "org.jvnet.mimepull:mimepull:1.9.6",
+        "org.jvnet.staxex:stax-ex:1.7.7",
+        "org.loadtest4j:loadtest4j:0.19.0",
+        "org.loadtest4j.drivers:loadtest4j-jmeter:0.5.0",
+        "org.mariadb.jdbc:mariadb-java-client:2.5.4",
+        "org.mockito:mockito-core:2.28.2",
+        "org.mockito:mockito-inline:2.28.2",
+        "org.mongodb:mongo-java-driver:3.12.0",
+        "org.objenesis:objenesis:2.6",
+        "org.openjdk.jmh:jmh-core:1.19",
+        "org.openjdk.jmh:jmh-generator-annprocess:1.19",
+        "org.opensaml:opensaml-core:3.3.0",
+        "org.opensaml:opensaml-messaging-api:3.3.0",
+        "org.opensaml:opensaml-messaging-impl:3.3.0",
+        "org.opensaml:opensaml-profile-api:3.3.0",
+        "org.opensaml:opensaml-saml-api:3.3.0",
+        "org.opensaml:opensaml-saml-impl:3.3.0",
+        "org.opensaml:opensaml-security-api:3.3.0",
+        "org.opensaml:opensaml-security-impl:3.3.0",
+        "org.opensaml:opensaml-soap-api:3.3.0",
+        "org.opensaml:opensaml-soap-impl:3.3.0",
+        "org.opensaml:opensaml-storage-api:3.3.0",
+        "org.opensaml:opensaml-xmlsec-api:3.3.0",
+        "org.opensaml:opensaml-xmlsec-impl:3.3.0",
+        "org.ow2.asm:asm-analysis:8.0.1",
+        "org.ow2.asm:asm-commons:8.0.1",
+        "org.ow2.asm:asm-tree:8.0.1",
+        "org.ow2.asm:asm-util:8.0.1",
+        "org.ow2.asm:asm:8.0.1",
+        "org.parboiled:parboiled-core:1.2.0",
+        "org.parboiled:parboiled-java:1.2.0",
+        "org.pegdown:pegdown:1.5.0",
+        "org.reflections:reflections:0.9.12",
+        "org.rocksdb:rocksdbjni:6.8.1",
+        "org.scala-lang:scala-library:2.11.1",
+        "org.slf4j:slf4j-api:1.7.13",
+        "org.slf4j:slf4j-jdk14:1.7.13",
+        "org.slf4j:slf4j-log4j12:1.7.13",
+        "org.threeten:threeten-extra:0.9",
+        "org.threeten:threetenbp:1.3.3",
+        "org.tukaani:xz:1.5",
+        "org.xerial.snappy:snappy-java:1.1.7.3",
+        "rome:rome:1.0",
+        "software.amazon.ion:ion-java:1.0.2",
+        "stax:stax-api:1.0.1",
+        "wsdl4j:wsdl4j:1.6.2",
+        "io.projectreactor:reactor-core:3.3.2.RELEASE",
+        "io.projectreactor:reactor-test:3.3.2.RELEASE",
+        "dnsjava:dnsjava:3.0.2",
+        "org.apache.iceberg:iceberg-core:0.8.0-incubating",
+        "org.apache.iceberg:iceberg-api:0.8.0-incubating",
+        "org.apache.iceberg:iceberg-data:0.8.0-incubating",
+        "org.apache.iceberg:iceberg-parquet:0.8.0-incubating",
+        "org.apache.iceberg:iceberg-hive:0.8.0-incubating",
+        "org.eclipse.jgit:org.eclipse.jgit:5.7.0.202003110725-r",
+        "org.eclipse.jgit:org.eclipse.jgit.junit:5.7.0.202003110725-r",
+        #        "com.walkmind.extensions:serializers:1.5",
+        #        "com.walkmind.extensions:collections:1.12",
+        "org.jooq:jool-java-8:0.9.14",
+        "com.github.alexandrnikitin:bloom-filter_2.11:0.11.0",
+        "org.apache.commons:commons-pool2:2.8.0",
+        "mysql:mysql-connector-java:8.0.13",
+        "com.github.luben:zstd-jni:1.4.9-1",
+        "org.msgpack:jackson-dataformat-msgpack:0.8.20",
+        "com.jayway.jsonpath:json-path:2.4.0",
+        "com.jayway.restassured:rest-assured:2.9.0",
+        "org.projectlombok:lombok:1.18.12",
+        "com.github.tomakehurst:wiremock:2.21.0",
+        "org.wiremock:wiremock-webhooks-extension:1.0.0",
+        "org.wso2.apache.httpcomponents:httpclient:4.3.1.wso2v1",
+        "io.apptik.json:json-core:1.0.4",
+        "io.apptik.json:json-wrapper:1.0.4",
+        "io.apptik.json:json-schema:1.0.4",
+        "io.apptik.json:json-generator:1.0.4",
+        "io.apptik.json:model-generator:1.0.4",
+        "io.apptik.json:json-aws:1.0.4",
+        "org.freemarker:freemarker:2.3.23",
+        "com.newrelic.telemetry:telemetry:0.7.0",
+        "com.newrelic.telemetry:telemetry-core:0.7.0",
+        "com.newrelic.telemetry:micrometer-registry-new-relic:0.6.0",
+        "io.micrometer:micrometer-core:1.5.3",
+        "org.hdrhistogram:HdrHistogram:2.1.12",
+        "com.github.java-json-tools:json-schema-validator:2.2.14",
+        "com.github.java-json-tools:json-schema-core:1.2.14",
+        "commons-dbutils:commons-dbutils:1.7",
+        "io.opentelemetry:opentelemetry-api:0.13.1",
+        "io.opentelemetry:opentelemetry-api-trace:0.13.1",
+        "io.opentelemetry:opentelemetry-context:0.13.1",
+        "io.opentelemetry:opentelemetry-extension-annotations:0.13.1",
+        "com.alibaba:druid:1.1.16",
+        "org.clojure:data.csv:1.0.0",
+        maven.artifact(
+            "org.clojure",
+            "spec.alpha",
+            "0.2.194",
+            exclusions = [
+                "org.clojure:clojure",
+            ],
+        ),
+        maven.artifact(
+            "org.clojure",
+            "core.specs.alpha",
+            "0.2.56",
+            exclusions = [
+                "org.clojure:clojure",
+            ],
+        ),
+        maven.artifact(
+            "org.flatland",
+            "ordered",
+            "1.5.9",
+            exclusions = [
+                "org.clojure:clojure",
+            ],
+        ),
+        maven.artifact(
+            group = "org.clojure",
+            artifact = "clojure",
+            version = "1.10.1",
+            exclusions = [
+                "org.clojure:core.specs.alpha",
+                "org.clojure:spec.alpha",
+            ],
+        ),
+        "org.clojure:data.json:1.1.0",
+        "org.clojure:tools.logging:1.1.0",
+        "cheshire:cheshire:5.10.0",
+        "riddley:riddley:0.2.0",
+        "clj-http:clj-http:3.12.1",
+        "clj-tuple:clj-tuple:0.2.2",
+        "expound:expound:0.8.9",
+        "potemkin:potemkin:0.4.5",
+        "slingshot:slingshot:0.12.2",
+        "weavejester:dependency:0.2.1",
+        "org.clojure:tools.trace:0.7.11",
+        "org.clojure:test.check:1.1.0",
+        "lambdaisland:deep-diff2:2:2.0.108",
+        "orchestra:orchestra:2021.01.01-1",
+        "philoskim:debux:0.7.9",
+        "javax.ws.rs:javax.ws.rs-api:2.1.1",
+        maven.artifact(
+            group = "io.micrometer",
+            artifact = "micrometer-registry-stackdriver",
+            version = "1.5.3",
+            exclusions = [
+                "ch.qos.logback:logback-core",
+                "ch.qos.logback:logback-classic",
+            ],
+        ),
+        # Exclude SLF4J backend dependencies to have a better control on log output.
+        # SLF4J requires to have the only backend in a classpath.
+        # If more than one backend is found it chooses the first one which may not be the one we need.
+        maven.artifact(
+            group = "org.apache.hadoop",
+            artifact = "hadoop-common",
+            version = "2.7.7",
+            exclusions = [
+                "org.slf4j:slf4j-log4j12",
+            ],
+        ),
+        maven.artifact(
+            group = "org.apache.hadoop",
+            artifact = "hadoop-mapreduce-client-core",
+            version = "2.7.7",
+            exclusions = [
+                "org.slf4j:slf4j-log4j12",
+            ],
+        ),
+        maven.artifact(
+            "com.amazonaws",
+            "aws-java-sdk-test-utils",
+            "1.11.438",
+            testonly = True,
+        ),
+        maven.artifact(
+            "org.glassfish.jersey.test-framework.providers",
+            "jersey-test-framework-provider-grizzly2",
+            "2.31",
+            testonly = True,
+        ),
+        maven.artifact(
+            "org.glassfish.jersey.test-framework",
+            "jersey-test-framework-core",
+            "2.31",
+            testonly = True,
+        ),
+    ],
+    fail_if_repin_required = False,
+    fetch_sources = True,
+    # NOTE anytime you update artifacts or repositories, you need to run `bazel run @unpinned_maven//:pin` to regenerate maven_install.json
+    maven_install_json = "//:maven_install.json",
+    repositories = [
+        "https://repo1.maven.org/maven2/",
+        "https://maven.google.com/",
+        "https://repo.clojars.org",
+        "https://github.com/sendwithus/sendwithus-mvn-repo/raw/master/releases/",
+        "http://maven.snplow.com/releases/",
+        "https://repo.eclipse.org/content/repositories/egit-releases/",
+        "http://packages.confluent.io/maven/",
+        "https://example-programms.s3.amazonaws.com/",
+    ],
+    version_conflict_policy = "pinned",
+)
+
+load("@maven//:defs.bzl", "pinned_maven_install")
+
+pinned_maven_install()
+
+SNOWFLAKE_JDBC_VERSION = "3.12.9"
+
+http_file(
+    name = "snowflake_jdbc_driver",
+    sha256 = "9c234113d540f4b3d86084ab1880673150e686171905c8486ba88afc60c61af5",
+    urls = [
+        "https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/{version}/snowflake-jdbc-{version}.jar".format(version = SNOWFLAKE_JDBC_VERSION),
+    ],
+)
+
+http_archive(
+    name = "openjdk8u242_darwin_archive",
+    build_file_content = """
+package(default_visibility = ["//visibility:public"])
+
+java_runtime(
+    name = 'runtime',
+    srcs =  glob(['**']),
+    java='//:Contents/Home/bin/java'
+)
+""",
+    sha256 = "06675b7d65bce0313ee1f2e888dd44267e8afeced75e0b39b5ad1f5fdff54e0b",
+    strip_prefix = "jdk8u242-b08",
+    urls = ["https://github.com/AdoptOpenJDK/openjdk8-binaries/releases/download/jdk8u242-b08/OpenJDK8U-jdk_x64_mac_hotspot_8u242b08.tar.gz"],
+)
+
+http_archive(
+    name = "openjdk8u242_linux_archive",
+    build_file_content = """
+package(default_visibility = ["//visibility:public"])
+
+java_runtime(
+    name = 'runtime',
+    srcs =  glob(['**']),
+    java='//:bin/java'
+)
+""",
+    sha256 = "f39b523c724d0e0047d238eb2bb17a9565a60574cf651206c867ee5fc000ab43",
+    strip_prefix = "jdk8u242-b08",
+    urls = ["https://github.com/AdoptOpenJDK/openjdk8-binaries/releases/download/jdk8u242-b08/OpenJDK8U-jdk_x64_linux_hotspot_8u242b08.tar.gz"],
+)
+
+http_archive(
+    name = "io_buildbuddy_buildbuddy_toolchain",
+    sha256 = "a2a5cccec251211e2221b1587af2ce43c36d32a42f5d881737db3b546a536510",
+    strip_prefix = "buildbuddy-toolchain-829c8a574f706de5c96c54ca310f139f4acda7dd",
+    urls = ["https://github.com/buildbuddy-io/buildbuddy-toolchain/archive/829c8a574f706de5c96c54ca310f139f4acda7dd.tar.gz"],
+)
+
+load("@io_buildbuddy_buildbuddy_toolchain//:deps.bzl", "buildbuddy_deps")
+
+buildbuddy_deps()
+
+load("@io_buildbuddy_buildbuddy_toolchain//:rules.bzl", "buildbuddy")
+
+buildbuddy(name = "buildbuddy_toolchain")
+
+http_archive(
+    name = "rules_clojure",
+    sha256 = "4f172c833a40bfb2aea99835d81437a267aa70cc5719a7bbc97a92069a2aede4",
+    strip_prefix = "rules_clojure-master",
+    urls = ["https://github.com/simuons/rules_clojure/archive/master.tar.gz"],
+)
+
+load("@rules_clojure//:repositories.bzl", "rules_clojure_dependencies", "rules_clojure_toolchains")
+
+rules_clojure_dependencies()
+
+rules_clojure_toolchains()

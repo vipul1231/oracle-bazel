@@ -1,0 +1,281 @@
+package com.example.integrations.sql_server;
+
+import static java.util.stream.Collectors.*;
+
+import com.example.utils.ExampleClock;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterators;
+import java.sql.*;
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class SqlServerIbfIncrementalUpdater extends SqlServerSyncer implements DbIncrementalUpdater {
+    static final int MAXIMUM_PAGE_LIMIT = 15_000;
+
+    private final SetOnce<Map<TableRef, SchemaChangeResult>> tablesToResync = new SetOnce<>();
+
+    SqlServerIbfIncrementalUpdater(
+            SqlServerSource source, SqlServerState state, SqlServerInformer informer, Output<SqlServerState> out) {
+        super(source, state, informer, out);
+    }
+
+    @Override
+    public void incrementalUpdate(Set<TableRef> includedTables) {
+        if (!tablesToResync.isPresent()) tablesToResync.set(getSchemaChanges(includedTables));
+
+        for (TableRef table : includedTables) {
+
+            Map<String, IbfColumnInfo> modifiedColumns = ImmutableMap.of();
+
+            if (tablesToResync.get().containsKey(table)) {
+                SchemaChangeResult result = tablesToResync.get().get(table);
+                if (result.type == SchemaChangeType.UNKNOWN_CHANGE) {
+                    LOG.warning("Unknown schema change - " + result.type + " detected for " + table);
+                    continue;
+                } else if (result.isResyncNeeded) {
+                    resync(table, result.type.getDescription() + ": " + table);
+                    continue;
+                } else if (result.type == SchemaChangeType.ADD_COLUMN) {
+
+                    SqlServerTableInfo tableInfo = informer.tableInfo(table);
+                    Map<String, ColumnType> columnTypes =
+                            tableInfo
+                                    .sourceColumns()
+                                    .stream()
+                                    .filter(col -> result.modifiedColumns.containsKey(col.name))
+                                    .collect(toMap(col -> col.name, Column::asColumnType));
+
+                    Map<String, Object> defaultObjects = convertDefaultLiteralsToObjects(result.modifiedColumns);
+
+                    // TODO: Handle case when 'VIEW DEFINITION' permission is not granted
+                    for (String column : result.modifiedColumns.keySet()) {
+                        AddColumnOperation addColumnOp;
+
+                        if (tableInfo.getSyncMode() == SyncMode.History) {
+                            if (defaultObjects.get(column) == null) {
+                                addColumnOp =
+                                        new AddColumnHistoryModeOperation(
+                                                tableInfo.destinationTableRef,
+                                                column,
+                                                columnTypes.get(column),
+                                                ExampleClock.Instant.now());
+                            } else {
+                                addColumnOp =
+                                        new AddColumnWithDefaultValueHistoryModeOperation(
+                                                tableInfo.destinationTableRef,
+                                                column,
+                                                columnTypes.get(column),
+                                                defaultObjects.get(column),
+                                                ExampleClock.Instant.now());
+                            }
+                        } else {
+                            if (defaultObjects.get(column) == null) {
+                                addColumnOp =
+                                        new AddColumnLiveModeOperation(
+                                                tableInfo.destinationTableRef, column, columnTypes.get(column));
+                            } else {
+                                addColumnOp =
+                                        new AddColumnWithDefaultValueLiveModeOperation(
+                                                tableInfo.destinationTableRef,
+                                                column,
+                                                columnTypes.get(column),
+                                                defaultObjects.get(column));
+                            }
+                        }
+
+                        out.updateSchema(tableInfo.tableDefinition(), addColumnOp);
+                    }
+                }
+
+                modifiedColumns = result.modifiedColumns;
+            }
+
+            SqlServerTableInfo tableInfo = informer.tableInfo(table);
+            TableDefinition tableDefinition = tableInfo.tableDefinition();
+            Instant syncTime = ExampleClock.Instant.now();
+
+            IbfCheckpointManager<SqlServerIbfAdapter> checkpointManager =
+                    ibfCheckpointManager(table, modifiedColumns);
+
+            try {
+                IbfSyncResult result = checkpointManager.diff();
+                if (result.getSucceeded()) {
+                    processUpserts(tableInfo, result, syncTime);
+                    processDeletes(tableInfo, tableDefinition, result, syncTime);
+                    checkpointManager.update();
+                } else {
+                    resync(
+                            table,
+                            String.format("Failed to decode result for table [%s] so we need to resync it", table));
+                }
+            } catch (DataNotFoundException e) {
+                resync(
+                        table,
+                        String.format(
+                                "Sync data for table [%s] is missing from storage so we need to resync it", table));
+            } catch (Exception e) {
+                // we just log the exception here in order to let sync continue with the next table
+                LOG.warning(String.format("Failing to do ibf incremental update for table [%s]", table), e);
+            }
+        }
+    }
+
+    private void processUpserts(SqlServerTableInfo tableInfo, IbfSyncResult result, Instant syncTime) {
+        if (result.upserts().isEmpty()) return;
+
+        Iterator<List<Object>> allUpsertKeys = result.upserts().iterator();
+
+        int totalUpsertSize = result.upserts().size();
+        int upsertCount = 0;
+        while (upsertCount < totalUpsertSize) {
+            List<List<Object>> upsertKeysSubSet =
+                    ImmutableList.copyOf(Iterators.limit(allUpsertKeys, MAXIMUM_PAGE_LIMIT));
+            importPageOfUpserts(tableInfo, syncTime, upsertKeysSubSet);
+            upsertCount += upsertKeysSubSet.size();
+        }
+    }
+
+    private void importPageOfUpserts(SqlServerTableInfo tableInfo, Instant syncTime, List<List<Object>> upsertKeys) {
+        source.execute(
+                connection -> {
+                    try (ResultSet rows = selectRows(connection, tableInfo, upsertKeys).executeQuery()) {
+                        Map<String, Object> values;
+                        long recordCount = 0;
+
+                        while (rows.next()) {
+                            values = extractRowValues(tableInfo, sourceValueFetcher(rows), false);
+
+                            if (tableInfo.getSyncMode() == SyncMode.History) {
+                                out.upsert(tableInfo.tableDefinition(), values, syncTime);
+                            } else {
+                                out.upsert(tableInfo.tableDefinition(), values);
+                            }
+                            recordCount++;
+                        }
+
+                        LOG.customerInfo(ProcessedRecordsEvent.of(tableInfo.sourceTable.toString(), recordCount));
+                    }
+                });
+    }
+
+    private void processDeletes(
+            SqlServerTableInfo tableInfo,
+            TableDefinition tableDefinition,
+            IbfSyncResult result,
+            Instant syncTime) {
+        List<SqlServerColumnInfo> sortedKeyColumns =
+                tableInfo.sourceColumnInfo().stream().filter(ci -> ci.isPrimaryKey).collect(Collectors.toList());
+
+        for (List<Object> keys : result.deletes()) {
+            Map<String, Object> values = new HashMap<>();
+
+            for (int i = 0; i < sortedKeyColumns.size(); i++)
+                values.put(
+                        sortedKeyColumns.get(i).columnName,
+                        coercePrimaryKeyForDelete(sortedKeyColumns.get(i).destinationType, keys.get(i)));
+
+            if (tableInfo.getSyncMode() == SyncMode.Legacy) {
+                values.put(EXAMPLE_DELETED_COLUMN, true);
+                out.update(tableDefinition, values);
+            } else if (tableInfo.getSyncMode() == SyncMode.History) out.delete(tableDefinition, values, syncTime);
+            else out.delete(tableDefinition, values);
+        }
+    }
+
+    private Map<String, Object> convertDefaultLiteralsToObjects(Map<String, IbfColumnInfo> modifiedColumns) {
+        Set<String> columnsWithDefaults =
+                modifiedColumns
+                        .keySet()
+                        .stream()
+                        .filter(col -> modifiedColumns.get(col).columnDefaultValue != null)
+                        .collect(toSet());
+
+        if (columnsWithDefaults.isEmpty()) return Map.of();
+
+        String defaultValues =
+                columnsWithDefaults
+                        .stream()
+                        .map(
+                                col ->
+                                        modifiedColumns.get(col).columnDefaultValue
+                                                + " AS "
+                                                + SqlStatementUtils.SQL_SERVER.quote(col))
+                        .collect(joining(","));
+        return source.execute(
+                connection -> {
+                    try (ResultSet row = connection.prepareStatement("SELECT " + defaultValues).executeQuery()) {
+                        Map<String, Object> defaultObjects = new HashMap<>();
+
+                        if (row.next()) {
+                            for (String column : columnsWithDefaults) {
+                                defaultObjects.put(
+                                        column,
+                                        fetchColumnValue(row, column, modifiedColumns.get(column).destColumnType));
+                            }
+                        } // Add error handling
+
+                        return defaultObjects;
+                    }
+                });
+    }
+
+    private Object coercePrimaryKeyForDelete(DataType type, Object key) {
+        switch (type) {
+            case Int:
+            case Short:
+                return Math.toIntExact((long) key);
+            case Long:
+            case BigDecimal:
+            case String:
+                return key;
+            default:
+                throw new RuntimeException("Unsupported Primary Key Data Type: " + type);
+        }
+    }
+
+    /**
+     * Creates {@link PreparedStatement} to select rows for the given table. The caller has to call {@link
+     * PreparedStatement#close()} on the returned object.
+     */
+    @SuppressWarnings("java:S2095")
+    private static PreparedStatement selectRows(
+            Connection connection, SqlServerTableInfo tableInfo, List<List<Object>> upsertKeys) throws SQLException {
+
+        List<SqlServerColumnInfo> keyColumns =
+                tableInfo.sourceColumnInfo().stream().filter(ci -> ci.isPrimaryKey).collect(Collectors.toList());
+
+        String sourceTable = SqlStatementUtils.SQL_SERVER.quote(tableInfo.sourceTable);
+        String columnsToSelect =
+                tableInfo.includedColumnInfo().stream().map(SqlServerSyncer::wrap).collect(Collectors.joining(", "));
+
+        String wherePrimaryKeyInUpserts = SqlStatementUtils.SQL_SERVER.whereIn(keyColumns, upsertKeys);
+
+        String query = "SELECT " + columnsToSelect + " FROM " + sourceTable + " WHERE " + wherePrimaryKeyInUpserts;
+
+        return connection.prepareStatement(query);
+    }
+
+    private Map<TableRef, SchemaChangeResult> getSchemaChanges(Set<TableRef> includedTables) {
+        String objectId = source.params.owner + "-" + source.params.schema;
+        IbfSchemaManager schemaManager = new IbfSchemaManager(getIbfStorage(), objectId);
+        Set<IbfTableInfo> latestIbfTableInfo = new HashSet<>();
+
+        for (TableRef tableRef : includedTables) {
+            SqlServerTableInfo tableInfo = informer.tableInfo(tableRef);
+            Map<String, IbfColumnInfo> columns =
+                    tableInfo
+                            .sourceColumnInfo()
+                            .stream()
+                            .collect(
+                                    toMap(
+                                            c -> c.columnName,
+                                            c ->
+                                                    new IbfColumnInfo(
+                                                            c.columnName, c.destinationType, c.defaultValueLiteral)));
+            latestIbfTableInfo.add(new IbfTableInfo(tableRef, columns));
+        }
+        return schemaManager.checkAndSaveSchemaChanges(latestIbfTableInfo);
+    }
+}

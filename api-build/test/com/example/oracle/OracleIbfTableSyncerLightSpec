@@ -1,0 +1,680 @@
+package com.example.integrations.oracle.ibf;
+
+import static java.util.Arrays.asList;
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+
+import com.google.common.collect.ImmutableMap;
+import java.io.IOException;
+import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import javax.sql.DataSource;
+import org.junit.*;
+
+public class OracleIbfTableSyncerLightSpec {
+
+    @Rule public FeatureFlagHelper flagHelper = new FeatureFlagHelper();
+
+    private OracleConnectorContext context;
+    private OracleIbfContext ibfContext;
+    private IbfCheckpointManager<OracleIbfAdapter> mockIbfCheckpointManager;
+    private OracleIbfTableSyncer tableSyncer;
+    private OracleTableState tableState;
+    private OracleIbfTableInfo tableInfo;
+    private OracleOutputHelper oracleOutputHelper;
+    private TableRef tableRef = new TableRef("schema", "table");
+
+    @Before
+    public void setup() throws SQLException {
+        flagHelper.addFlags(FlagName.OracleIbf.name());
+        oracleOutputHelper = mockOracleOutputHelper();
+        OracleConnectorContext.override(CertificateSource.class, () -> mockCertificateSource());
+        OracleConnectorContext.override(OracleApi.class, () -> mock(OracleApi.class));
+        OracleConnectorContext.override(OracleOutputHelper.class, () -> oracleOutputHelper);
+        OracleIbfContext.override(IbfPersistentStorage.class, () -> localTestIbfPersistentStorage());
+        OracleIbfContext.override(ColumnInfoService.class, () -> mockColumnInfoService());
+        OracleIbfContext.override(OracleOutputHelper.class, () -> oracleOutputHelper);
+        context =
+                new OracleConnectorContext()
+                        .credentials(OracleCredentials.builder().database("db").build())
+                        .connectionParameters(new ConnectionParameters("fu", "bar", TimeZone.getDefault()))
+                        .oracleState(new OracleState())
+                        .dataSource(
+                                mockDataSource(
+                                        mockPrepareStatement(
+                                                mockCreateStatement(mockConnection(), mockStatement()),
+                                                mockPreparedStatementExecuteQuery(
+                                                        mockPreparedStatement(), mockResultSetEmpty()))))
+                        .output(mock(Output.class));
+
+        mockIbfCheckpointManager = mock(IbfCheckpointManager.class);
+
+        initIbfContext();
+    }
+
+    private PeriodicCheckpointer getPeriodicCheckpointer() {
+        return new PeriodicCheckpointer(context.getOutput(), context.getOracleState(), Duration.ofSeconds(5));
+    }
+
+    @AfterClass
+    public static void cleanupAfter() {
+        OracleConnectorContext.clearOverrides();
+    }
+
+    private void initIbfContext() {
+        ibfContext =
+                new OracleIbfContext(context) {
+                    @Override
+                    IbfCheckpointManager<OracleIbfAdapter> getCheckpointManager(
+                            OracleIbfTableInfo ibfTableInfo, String ibfStorageId) {
+                        return mockIbfCheckpointManager;
+                    }
+                };
+    }
+
+    public static CertificateSource mockCertificateSource() {
+        CertificateSource cs = mock(CertificateSource.class);
+        when(cs.getTrustAnchors(any(DataSource.class), any(ConnectionParameters.class), anyBoolean()))
+                .thenReturn(new HashSet<>());
+        when(cs.getDefaultTrustAnchors(any(DataSource.class))).thenReturn(new HashSet<>());
+        return cs;
+    }
+
+    private void initTableStateAndInfo(TableRef tableRef) {
+        tableState = ibfContext.getOracleTableInfoProvider().getOracleTableState(tableRef);
+        tableInfo = ibfContext.getOracleIbfTableInfo(tableRef);
+    }
+
+    private OracleIbfTableSyncer getOracleIbfTableSyncer(
+            TableRef tableRef, SchemaChangeResult schemaChangeResult) {
+        OracleIbfSchemaChangeManager schemaChangeManager = mock(OracleIbfSchemaChangeManager.class);
+        // No resync needed
+        when(schemaChangeManager.getSchemaChange(any())).thenReturn(schemaChangeResult);
+
+        tableSyncer = ibfContext.newOracleIbfTableSyncer(schemaChangeManager, tableState, tableInfo);
+        return tableSyncer;
+    }
+
+    private Map<TableRef, List<OracleColumn>> setupTestWithTable(
+            TableRef tableRef, List<OracleColumn> columns, SyncMode syncMode, boolean excluded) {
+        context.standardConfig(mockStandardConfig(tableRef, syncMode, !excluded));
+        Map<TableRef, List<OracleColumn>> selectedTables = toMap(tableRef, columns);
+        ibfContext.setSelectedTables(selectedTables);
+        initTableStateAndInfo(tableRef);
+        return selectedTables;
+    }
+
+    private void setupMockIbfCheckpointManager(
+            boolean succeeded, List<List<Object>> upserts, Set<List<Object>> deletes) {
+        IbfSyncResult syncResult = mock(IbfSyncResult.class);
+        when(syncResult.getSucceeded()).thenReturn(succeeded);
+        when(syncResult.upserts()).thenReturn(upserts);
+        when(syncResult.deletes()).thenReturn(deletes);
+
+        try {
+            when(mockIbfCheckpointManager.diff()).thenReturn(syncResult);
+        } catch (Exception ignore) {
+        }
+    }
+
+    private void checkpointManagerResetException() {
+        try {
+            doThrow(new SQLException()).when(mockIbfCheckpointManager).reset();
+        } catch (SQLException ignore) {
+        }
+    }
+
+    private void checkpointManagerDiffException(Exception ex) {
+        try {
+            doThrow(ex).when(mockIbfCheckpointManager).diff();
+        } catch (Exception ignore) {
+        }
+    }
+
+    private void assertStateNotFailed() {
+        assertNotEquals(OracleTableState.TableIncrementalUpdateState.FAILED, tableState.getIncrementalUpdateState());
+    }
+
+    private void assertStateFailed() {
+        assertEquals(OracleTableState.TableIncrementalUpdateState.FAILED, tableState.getIncrementalUpdateState());
+    }
+
+    @Test
+    public void tableSyncer_updateTable_succeeded() {
+        setupMockIbfCheckpointManager(
+                true,
+                listOfRecords(asList("test1", "test2"), asList("test3", "test4")),
+                setOfRecords(asList(Long.valueOf(1)), asList(Long.valueOf(2))));
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_updateTable_noDml() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableState.recordSyncStartTime();
+        tableSyncer.performPreImport();
+        assertFalse(tableState.isInitialSyncCompleted());
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+        assertTrue(tableState.isIncrementalSyncCompleted());
+        assertEquals(Instant.class, tableState.getSyncStartTime().getClass());
+    }
+
+    @Test
+    public void tableSyncer_updateTable_notSucceeded() {
+        setupMockIbfCheckpointManager(false, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateFailed();
+        assertFalse(tableState.isIncrementalSyncCompleted());
+    }
+
+    @Test
+    public void tableSyncer_updateTable_schemaChange() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.ADD_COLUMN, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_updateTable_schemaChange_historyMode_addColumns() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+        Map<String, IbfColumnInfo> changedColumns = new HashMap<>();
+        changedColumns.put("column_no_default", new IbfColumnInfo("column_no_default", DataType.String));
+        changedColumns.put("column_default", new IbfColumnInfo("column_default", DataType.String, "default"));
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+        columns.add(newSimpleColumn("column_no_default", VARCHAR2_128, tableRef));
+        columns.add(newSimpleColumn("column_default", VARCHAR2_128, tableRef));
+        setupTestWithTable(tableRef, columns, SyncMode.History, false);
+        setModifiedColumn("column_no_default", Optional.empty());
+        setModifiedColumn("column_default", Optional.of("default"));
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.ADD_COLUMN, changedColumns, false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        verify(oracleOutputHelper).updateSchema(eq(tableRef), any(AddColumnHistoryModeOperation.class));
+        verify(oracleOutputHelper).updateSchema(eq(tableRef), any(AddColumnWithDefaultValueHistoryModeOperation.class));
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_updateTable_schemaChange_liveMode_addColumns() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+        Map<String, IbfColumnInfo> changedColumns = new HashMap<>();
+        changedColumns.put("column_no_default", new IbfColumnInfo("column_no_default", DataType.String));
+        changedColumns.put("column_default", new IbfColumnInfo("column_default", DataType.String, "default"));
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+        columns.add(newSimpleColumn("column_no_default", VARCHAR2_128, tableRef));
+        columns.add(newSimpleColumn("column_default", VARCHAR2_128, tableRef));
+        setupTestWithTable(tableRef, columns, SyncMode.Live, false);
+        setModifiedColumn("column_no_default", Optional.empty());
+        setModifiedColumn("column_default", Optional.of("default"));
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.ADD_COLUMN, changedColumns, false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        verify(oracleOutputHelper).updateSchema(eq(tableRef), any(AddColumnLiveModeOperation.class));
+        verify(oracleOutputHelper).updateSchema(eq(tableRef), any(AddColumnWithDefaultValueLiveModeOperation.class));
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_updateTable_unknownSchemaChange() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.UNKNOWN_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_resyncTable() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        // tableInfo.isExcluded
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), true));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+    }
+
+    @Test
+    public void tableSyncer_excludedTable() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateNotFailed();
+    }
+
+    @Test(expected = RuntimeException.class)
+    public void tableSyncer_preImport_checkpointManagerResetException() {
+        checkpointManagerResetException();
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performPreImport();
+    }
+
+    @Test
+    public void tableSyncer_incrementalUpdate_checkpointManagerDiffDataException() {
+        checkpointManagerDiffException(new DataNotFoundException("testing"));
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateFailed();
+    }
+
+    @Test
+    public void tableSyncer_incrementalUpdate_checkpointManagerDiffIOException() {
+        checkpointManagerDiffException(new IOException());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateFailed();
+    }
+
+    @Test
+    public void tableSyncer_incrementalUpdate_keysVsColumnsSizeMismatch() {
+        setupMockIbfCheckpointManager(
+                true, listOfRecords(), setOfRecords(asList(Long.valueOf(1), Long.valueOf(2))));
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfTableSyncer tableSyncer =
+                getOracleIbfTableSyncer(
+                        tableRef, new SchemaChangeResult(SchemaChangeType.NO_CHANGE, new HashMap<>(), false));
+
+        tableSyncer.performIncrementalSync();
+
+        assertStateFailed();
+    }
+
+    @Test
+    public void incrementalUpdater_normalOperation() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        runSync(getIncrementalUpdater(columnsForTestTable1(tableRef)));
+    }
+
+    @Test
+    public void incrementalUpdater_replacementIbf() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+
+        // sync #1
+        OracleAbstractIncrementalUpdater incrementalUpdater1 = getIncrementalUpdater(columns);
+
+        runSync(incrementalUpdater1);
+
+        // sync #2
+        // re-initialize the ibf context
+        initIbfContext();
+
+        columns.add(newSimpleColumn("ADDED_COL", INTEGER, tableRef));
+
+        OracleAbstractIncrementalUpdater incrementalUpdater2 = getIncrementalUpdater(columns);
+
+        // Simulate the IbfSchemaManager
+        OracleIbfColumnInfo oracleIbfColumnInfo =
+                (OracleIbfColumnInfo) setModifiedColumn("ADDED_COL", Optional.empty());
+
+        runSync(incrementalUpdater2);
+
+        oracleIbfColumnInfo.setDefaultValue("DECIMAL");
+        assertEquals("DECIMAL", oracleIbfColumnInfo.getColumnDefaultValue());
+    }
+
+    @Test
+    public void incrementalUpdater_replacementIbf_dataDefaultException() throws Exception {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+
+        // sync #1
+        OracleAbstractIncrementalUpdater incrementalUpdater1 = getIncrementalUpdater(columns);
+
+        runSync(incrementalUpdater1);
+
+        // sync #2
+        // re-initialize the ibf context
+        initIbfContext();
+
+        columns.add(newSimpleColumn("ADDED_COL", INTEGER, tableRef));
+
+        OracleAbstractIncrementalUpdater incrementalUpdater2 = getIncrementalUpdater(columns);
+
+        // Simulate the IbfSchemaManager
+        setModifiedColumn("ADDED_COL", Optional.empty());
+
+        when(ibfContext.getColumnInfoService().getDataDefault(any())).thenThrow(new SQLException());
+
+        runSync(incrementalUpdater2);
+    }
+
+    @Test
+    public void incrementalUpdater_replacementIbf_dataDefaultNonLiteral() throws Exception {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+
+        // sync #1
+        runSync(getIncrementalUpdater(columns));
+
+        // sync #2
+        // re-initialize the ibf context
+        initIbfContext();
+
+        columns.add(newSimpleColumn("ADDED_COL", INTEGER, tableRef));
+
+        OracleAbstractIncrementalUpdater incrementalUpdater2 = getIncrementalUpdater(columns);
+
+        // Simulate the IbfSchemaManager
+        setModifiedColumn("ADDED_COL", Optional.of("NaN"));
+
+        runSync(incrementalUpdater2);
+    }
+
+    private OracleAbstractIncrementalUpdater getIncrementalUpdater(List<OracleColumn> columns) {
+        return ibfContext.newIncrementalUpdater(setupTestWithTable(tableRef, columns, SyncMode.History, false));
+    }
+
+    @Test
+    public void incrementalUpdater_replacementIbf_defaultColumnValues() {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        List<OracleColumn> columns = columnsForTestTable1(tableRef);
+
+        // sync #1
+        OracleAbstractIncrementalUpdater incrementalUpdater1 = getIncrementalUpdater(columns);
+
+        // Simulate OracleUpdater
+        runSync(incrementalUpdater1);
+
+        // sync #2
+        // re-initialize the ibf context
+        initIbfContext();
+
+        columns.add(newSimpleColumn("ADDED_COL", INTEGER, tableRef));
+
+        OracleAbstractIncrementalUpdater incrementalUpdater2 = getIncrementalUpdater(columns);
+
+        // Simulate the IbfSchemaManager
+        setModifiedColumn("ADDED_COL", Optional.of("42"));
+
+        // Simulate OracleUpdater
+        runSync(incrementalUpdater2);
+    }
+
+    private OracleColumnInfo getOracleColumnInfo(String name) {
+        return ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef).getColumnInfo(name);
+    }
+
+    private IbfColumnInfo setModifiedColumn(String column, Optional<String> dataDefault) {
+        OracleIbfColumnInfo ibfColumnInfo = new OracleIbfColumnInfo(getOracleColumnInfo(column));
+        tableInfo.setModifiedColumns(ImmutableMap.of(column, ibfColumnInfo));
+
+        try {
+            when(ibfContext.getColumnInfoService().getDataDefault(any())).thenReturn(dataDefault);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        return ibfColumnInfo;
+    }
+
+    @Test
+    public void ibfAdapter_normalOperation() throws SQLException {
+        setupMockIbfCheckpointManager(true, listOfRecords(), setOfRecords());
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, false);
+
+        OracleIbfAdapter adapter = ibfContext.getOracleIbfAdapter(tableInfo.getOracleTableInfo());
+
+        assertNotNull(adapter.getOracleTableInfo());
+        assertNotNull(adapter.getIbfTableInfo());
+        assertNotNull(adapter.keyTypes());
+        assertNotNull(adapter.keyLengths());
+        assertTrue(adapter.hasCompoundPkSupport());
+
+        // Get a "test" IBF
+        assertNotNull(adapter.getInvertibleBloomFilter(101));
+
+        // Get a regular IBF
+        assertNotNull(adapter.getResizableInvertibleBloomFilter(101, ResizableInvertibleBloomFilter.Sizes.SMALL));
+
+        setModifiedColumn("UNSIGNED_SMALLINT_TEST", Optional.empty());
+
+        // Get a replacement IBF
+        assertNotNull(adapter.getResizableInvertibleBloomFilter(101, ResizableInvertibleBloomFilter.Sizes.SMALL));
+
+        // Get a transitional IBF
+        assertNotNull(
+                adapter.getReplacementResizableInvertibleBloomFilter(101, ResizableInvertibleBloomFilter.Sizes.SMALL));
+
+        assertNotNull(adapter.estimatedRowCount());
+    }
+
+    private void runSync(OracleAbstractIncrementalUpdater incrementalUpdater) {
+        incrementalUpdater.start();
+        incrementalUpdater.doIncrementalWork();
+        incrementalUpdater.stop();
+        incrementalUpdater.doIncrementalWork();
+        incrementalUpdater.close();
+    }
+
+    @Test(expected = SQLException.class)
+    public void oracleIbfAdapter_exceptionOnIbfQuery() throws SQLException {
+
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfAdapter adapter =
+                new OracleIbfAdapter(
+                        mock(DataSource.class),
+                        ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef),
+                        tableInfo,
+                        new OracleIBFQueryBuilder(ibfContext.getOracleIbfTableInfo(tableRef)),
+                        getPeriodicCheckpointer()) {
+
+                    @Override
+                    protected void createBitXorFunction() throws SQLException {
+                        // do nothing for test
+                    }
+
+                    @Override
+                    protected void executeIbfQueryAndLoad(InvertibleBloomFilter ibf, String query) throws SQLException {
+                        throw new SQLException();
+                    }
+                };
+
+        adapter.getInvertibleBloomFilter(1);
+    }
+
+    @Test(expected = SQLException.class)
+    public void oracleIbfAdapter_exceptionOnExecuteSql() throws SQLException {
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfAdapter adapter =
+                new OracleIbfAdapter(
+                        mock(DataSource.class),
+                        ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef),
+                        tableInfo,
+                        new OracleIBFQueryBuilder(ibfContext.getOracleIbfTableInfo(tableRef)),
+                        getPeriodicCheckpointer()) {
+
+                    @Override
+                    protected boolean testBitXorFunction() throws SQLException {
+                        return false;
+                    }
+
+                    @Override
+                    protected void executeSql(String sql) throws SQLException {
+                        throw new SQLException();
+                    }
+                };
+
+        adapter.getInvertibleBloomFilter(1);
+    }
+
+    @Test
+    public void isBitXorFunctionCreated_no() throws SQLException {
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfAdapter adapter =
+                new OracleIbfAdapter(
+                        mock(DataSource.class),
+                        ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef),
+                        tableInfo,
+                        new OracleIBFQueryBuilder(ibfContext.getOracleIbfTableInfo(tableRef)),
+                        getPeriodicCheckpointer()) {
+
+                    @Override
+                    protected boolean isBitXorFunctionCreated() throws SQLException {
+                        throw new SQLException(
+                                OracleErrorCode.ORA_00904.getErrorCodeLabel(),
+                                "",
+                                OracleErrorCode.ORA_00904.getErrorCode());
+                    }
+
+                    @Override
+                    protected void executeSql(String sql) throws SQLException {
+                        // do nothing
+                    }
+                };
+
+        adapter.createBitXorFunction();
+    }
+
+    @Test
+    public void isBitXorFunctionCreated_yes() throws SQLException {
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfAdapter adapter =
+                new OracleIbfAdapter(
+                        mockDataSource(
+                                mockConnection(
+                                        mockPreparedStatementExecuteQuery(
+                                                mockPreparedStatement(), mockResultSetNotEmpty()))),
+                        ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef),
+                        tableInfo,
+                        new OracleIBFQueryBuilder(ibfContext.getOracleIbfTableInfo(tableRef)),
+                        getPeriodicCheckpointer());
+
+        adapter.createBitXorFunction();
+    }
+
+    @Test(expected = SQLException.class)
+    public void isBitXorFunctionCreated_exception() throws SQLException {
+        setupTestWithTable(tableRef, columnsForTestTable1(tableRef), SyncMode.History, true);
+
+        OracleIbfAdapter adapter =
+                new OracleIbfAdapter(
+                        mock(DataSource.class),
+                        ibfContext.getOracleTableInfoProvider().getOracleTableInfo(tableRef),
+                        tableInfo,
+                        new OracleIBFQueryBuilder(ibfContext.getOracleIbfTableInfo(tableRef)),
+                        getPeriodicCheckpointer()) {
+
+                    @Override
+                    protected boolean isBitXorFunctionCreated() throws SQLException {
+                        throw new SQLException();
+                    }
+                };
+
+        adapter.getInvertibleBloomFilter(1);
+    }
+}

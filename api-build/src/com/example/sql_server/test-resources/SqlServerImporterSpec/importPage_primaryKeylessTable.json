@@ -1,0 +1,37 @@
+{
+  "warningMap": {},
+  "tables": {
+    "wh_prefix_default_schema.default_table": {
+      "primaryKeys": [
+        "_example_id"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "UPDATABLE_COLUMN": "java.lang.Integer",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_id": "java.lang.String",
+        "_example_synced": "java.time.Instant"
+      },
+      "records": [
+        {
+          "UPDATABLE_COLUMN": 1,
+          "_example_deleted": false,
+          "_example_id": "P4rdc5NbwBWnQofV9HtAuwjiLIA=",
+          "_example_synced": "2019-07-08T00:37:47.072Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 2,
+          "_example_deleted": false,
+          "_example_id": "DCH8OiMwvvCPdDYah+mekxOsT5E=",
+          "_example_synced": "2019-07-08T00:37:47.085Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 3,
+          "_example_deleted": false,
+          "_example_id": "TlfAt9XVLj7CNkiIe4VDfj0tEsc=",
+          "_example_synced": "2019-07-08T00:37:47.085Z"
+        }
+      ]
+    }
+  }
+}

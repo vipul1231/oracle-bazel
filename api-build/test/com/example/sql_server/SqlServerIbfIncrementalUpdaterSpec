@@ -1,0 +1,223 @@
+package com.example.integrations.sql_server;
+
+import static com.example.integrations.db.DbRowValue.PRIMARY_KEY_NAME;
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+
+import com.example.core.ConnectionParameters;
+import com.example.core.SyncMode;
+import com.example.core.TableRef;
+import com.example.core.annotations.DataType;
+import com.example.core.mocks.MockOutput2;
+import com.example.core.warning.WarningTypeRegistry;
+import com.example.core2.Output;
+import com.example.core2_1.operation.update_schema.AddColumnWithDefaultValueHistoryModeOperation;
+import com.example.core2_1.operation.update_schema.AddColumnWithDefaultValueLiveModeOperation;
+import com.example.crypto.Encrypt;
+import com.example.flag.FlagName;
+import com.example.integrations.db.*;
+import com.example.lambda.Lazy;
+import com.example.services.CaptureConnectorStrategyResync;
+import com.example.services.CaptureConnectorStrategyResyncProvider;
+import com.example.ibf.cloud_storage.IbfPersistentStorage;
+import com.example.ibf.schema.IbfColumnInfo;
+import com.example.ibf.schema.IbfSchemaManager;
+import com.example.ibf.schema.IbfTableInfo;
+import com.google.common.collect.ImmutableMap;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TimeZone;
+import javax.crypto.spec.SecretKeySpec;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.reflect.FieldUtils;
+import org.junit.*;
+
+public class SqlServerIbfIncrementalUpdaterSpec
+        extends SqlDbIncrementalUpdaterSpec<SqlServerCredentials, SqlServerState> {
+
+    private static final Lazy<Path> STORAGE_DIR =
+            new Lazy<>(() -> Files.createTempDirectory("local_disk_ibf_storage_client-"));
+
+    @Rule public FeatureFlagHelper flagHelper = new FeatureFlagHelper();
+
+    SqlServerSource source;
+    protected SecretKeySpec secretKey = new SecretKeySpec(new byte[16], 0, 16, Encrypt.DEFAULT_ALGORITHM);
+    protected IbfPersistentStorage storage =
+            IbfPersistentStorage.newBuilder(secretKey).withLocalDiskStorage(STORAGE_DIR.get()).build();
+
+    @Before
+    public void beforeSqlServerIncrementalUpdaterIbfSpec() {
+        flagHelper.addFlags("NoHikariConnectionPool", FlagName.SqlServerUseApplicationIntent.name());
+
+        WarningTypeRegistry.register(new SqlServerService().warningTypes());
+        CaptureConnectorStrategyResyncProvider.reset();
+        CaptureConnectorStrategyResyncProvider.set(() -> mock(CaptureConnectorStrategyResync.class));
+
+        source = new SqlServerSource(testDb.credentials(), params());
+    }
+
+    @After
+    public void afterSqlServerIncrementalUpdaterIbfSpec() {
+        source.close();
+    }
+
+    @Override
+    protected DbIncrementalUpdater createIncrementalUpdater(
+            SqlServerState state, Output<SqlServerState> out, Map<TableRef, SyncMode> tableModes) {
+        SqlServerIbfIncrementalUpdater ibfIncrementalUpdater =
+                new SqlServerIbfIncrementalUpdater(
+                        source,
+                        state,
+                        new SqlServerInformer(source, tableHelper.createStandardConfig(tableModes)),
+                        out);
+
+        try {
+            FieldUtils.writeField(ibfIncrementalUpdater, "ibfStorage", storage, true);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return ibfIncrementalUpdater;
+    }
+
+    @Override
+    protected SqlServerState prepareMidUpdateState(SqlServerState newState, List<TableRef> tablesToUpdate) {
+        tablesToUpdate.forEach(
+                t -> {
+                    newState.initTableState(t, Instant.EPOCH);
+                    newState.setImportFinishedV3(t);
+
+                    try {
+                        resetIbfCheckpoint(newState, t);
+                    } catch (SQLException e) {
+                        throw new RuntimeException("exception occured: " + e);
+                    }
+                });
+
+        return newState;
+    }
+
+    @Override
+    protected SqlServerTestDb testDb() {
+        return new SqlServerTestDb();
+    }
+
+    @Override
+    protected SqlServerRowHelper rowHelper() {
+        return new SqlServerRowHelper();
+    }
+
+    @Override
+    protected SqlServerState newState() {
+        return new SqlServerState();
+    }
+
+    @Override
+    protected Class<SqlServerState> stateClass() {
+        return SqlServerState.class;
+    }
+
+    @Override
+    protected ConnectionParameters params() {
+        // need an unique group id for files for storing the schema meta data
+        return new ConnectionParameters(RandomStringUtils.randomAlphabetic(8), "wh_prefix", TimeZone.getDefault());
+    }
+
+    private void resetIbfCheckpoint(SqlServerState state, TableRef table) throws SQLException {
+        SqlServerIbfIncrementalUpdater incrementalUpdater =
+                (SqlServerIbfIncrementalUpdater) createIncrementalUpdater(state, new MockOutput2<>(state), table);
+        incrementalUpdater.ibfCheckpointManager(table, ImmutableMap.of()).reset();
+    }
+
+    @Test
+    public void schemaMigration_testAddColumnForTinyIntLegacy() throws Exception {
+        columnAdditionTest(SyncMode.Legacy, "TINYINT", (short) 255);
+    }
+
+    @Test
+    public void schemaMigration_testAddColumnForIntLegacy() throws Exception {
+        columnAdditionTest(SyncMode.Legacy, "INT", 123);
+    }
+
+    @Test
+    public void schemaMigration_testAddColumnForIntHistory() throws Exception {
+        columnAdditionTest(SyncMode.History, "INT", 123);
+    }
+
+    @Test
+    public void schemaMigration_testAddColumnForStringLegacy() throws Exception {
+        columnAdditionTest(SyncMode.Legacy, "VARCHAR(10)", "abc123");
+    }
+
+    @Test
+    public void schemaMigration_testAddColumnForStringHistory() throws Exception {
+        columnAdditionTest(SyncMode.History, "VARCHAR(10)", "abc123");
+    }
+
+    private void columnAdditionTest(SyncMode mode, String columnType, Object defaultValue)
+            throws SQLException, IOException {
+        this.syncMode = mode;
+        DbRow<DbRowValue> row =
+                new DbRow<>(new DbRowValue.Builder("INT", PRIMARY_KEY_NAME).value(1).primaryKey(true).build());
+        String columnToAdd = "new_column";
+
+        testDb.createTableFromRow(row, defaultTable);
+        testDb.insertRowIntoTable(row, defaultTable);
+
+        SqlServerState state = prepareMidUpdateState(newState(), defaultTable);
+
+        IbfSchemaManager schemaManager =
+                new IbfSchemaManager(storage, source.params.owner + "-" + source.params.schema);
+        schemaManager.checkAndSaveSchemaChanges(
+                Set.of(
+                        new IbfTableInfo(
+                                defaultTable,
+                                Map.of(PRIMARY_KEY_NAME, new IbfColumnInfo(PRIMARY_KEY_NAME, DataType.Int)))));
+
+        testDb.execute(
+                String.format(
+                        "ALTER TABLE %s ADD %s %s NOT NULL CONSTRAINT d_new_column DEFAULT '%s'",
+                        defaultTable, columnToAdd, columnType, defaultValue));
+
+        incrementalUpdateAndAssertOutput(
+                (updater, spiedOutput) -> {
+                    assertFalse(
+                            "There should be at least one schema migration detected from the sync",
+                            spiedOutput.schemaMigrations.isEmpty());
+
+                    if (mode == SyncMode.History) {
+                        AddColumnWithDefaultValueHistoryModeOperation addColumnOp =
+                                (AddColumnWithDefaultValueHistoryModeOperation)
+                                        spiedOutput
+                                                .schemaMigrations
+                                                .values()
+                                                .stream()
+                                                .findFirst()
+                                                .map(ops -> ops.get(0))
+                                                .orElseThrow();
+                        assertEquals(addColumnOp.column, columnToAdd);
+                        assertEquals(addColumnOp.defaultValue, defaultValue);
+                    } else {
+                        AddColumnWithDefaultValueLiveModeOperation addColumnOp =
+                                (AddColumnWithDefaultValueLiveModeOperation)
+                                        spiedOutput
+                                                .schemaMigrations
+                                                .values()
+                                                .stream()
+                                                .findFirst()
+                                                .map(ops -> ops.get(0))
+                                                .orElseThrow();
+                        assertEquals(addColumnOp.column, columnToAdd);
+                        assertEquals(addColumnOp.defaultValue, defaultValue);
+                    }
+                },
+                state,
+                defaultTable);
+    }
+}

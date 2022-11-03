@@ -1,0 +1,21 @@
+{
+  "warningMap" : { },
+  "tables" : {
+    "wh_prefix_default_schema.default_table" : {
+      "primaryKeys" : [ "PRIMARY_KEY" ],
+      "foreignKeys" : [ ],
+      "classType" : {
+        "PRIMARY_KEY" : "java.lang.Integer",
+        "UPDATABLE_COLUMN" : "java.lang.String",
+        "_example_deleted" : "java.lang.Boolean",
+        "_example_synced" : "java.time.Instant"
+      },
+      "records" : [ {
+        "PRIMARY_KEY" : 1,
+        "UPDATABLE_COLUMN" : null,
+        "_example_deleted" : true,
+        "_example_synced" : "2020-04-20T18:58:18.038Z"
+      } ]
+    }
+  }
+}

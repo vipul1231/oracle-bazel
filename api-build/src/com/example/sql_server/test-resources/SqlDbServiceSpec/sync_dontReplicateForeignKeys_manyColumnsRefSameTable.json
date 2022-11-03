@@ -1,0 +1,49 @@
+{
+  "warningMap": {},
+  "tables": {
+    "wh_prefix_default_schema.child": {
+      "primaryKeys": [
+        "PRIMARY_KEY"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "PRIMARY_KEY": "java.lang.Integer",
+        "UPDATABLE_COLUMN": "java.lang.String",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_synced": "java.time.Instant",
+        "firstRef": "java.lang.Integer",
+        "secondRef": "java.lang.Integer"
+      },
+      "records": [
+        {
+          "PRIMARY_KEY": 2,
+          "UPDATABLE_COLUMN": "bar",
+          "_example_deleted": false,
+          "_example_synced": "2019-06-27T03:03:03.799Z",
+          "firstRef": 1,
+          "secondRef": 1
+        }
+      ]
+    },
+    "wh_prefix_default_schema.parent": {
+      "primaryKeys": [
+        "PRIMARY_KEY"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "PRIMARY_KEY": "java.lang.Integer",
+        "UPDATABLE_COLUMN": "java.lang.String",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_synced": "java.time.Instant"
+      },
+      "records": [
+        {
+          "PRIMARY_KEY": 1,
+          "UPDATABLE_COLUMN": "foo",
+          "_example_deleted": false,
+          "_example_synced": "2019-06-27T03:03:03.958Z"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "warningMap": {},
+  "tables": {
+    "wh_prefix_default_schema.default_table": {
+      "primaryKeys": [
+        "_example_id"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "UPDATABLE_COLUMN": "java.lang.Integer",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_id": "java.lang.String",
+        "_example_synced": "java.time.Instant"
+      },
+      "records": [
+        {
+          "UPDATABLE_COLUMN": 1,
+          "_example_deleted": true,
+          "_example_id": "P4rdc5NbwBWnQofV9HtAuwjiLIA=",
+          "_example_synced": "2019-07-08T01:03:05.958Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 4,
+          "_example_deleted": false,
+          "_example_id": "D6Btzcqjbd86gg5JVq4CtPvTKfs=",
+          "_example_synced": "2019-07-08T01:03:05.971Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 2,
+          "_example_deleted": true,
+          "_example_id": "DCH8OiMwvvCPdDYah+mekxOsT5E=",
+          "_example_synced": "2019-07-08T01:03:05.973Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 5,
+          "_example_deleted": false,
+          "_example_id": "E5MCa9jaDYt8FJn41czqPxV336U=",
+          "_example_synced": "2019-07-08T01:03:05.973Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 3,
+          "_example_deleted": true,
+          "_example_id": "TlfAt9XVLj7CNkiIe4VDfj0tEsc=",
+          "_example_synced": "2019-07-08T01:03:05.974Z"
+        },
+        {
+          "UPDATABLE_COLUMN": 6,
+          "_example_deleted": false,
+          "_example_id": "VNBU1vWVaP0Nn9iRM8TW0b78Itk=",
+          "_example_synced": "2019-07-08T01:03:05.974Z"
+        }
+      ]
+    }
+  }
+}

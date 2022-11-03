@@ -1,0 +1,77 @@
+{
+  "warningMap": {},
+  "tables": {
+    "wh_prefix_lower_case_schema.lower_case_table": {
+      "primaryKeys": [
+        "PRIMARY_KEY"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "MiXeD_CaSe_CoLuMn": "java.lang.Integer",
+        "PRIMARY_KEY": "java.lang.Integer",
+        "UPPER_CASE_COLUMN": "java.lang.Integer",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_synced": "java.time.Instant",
+        "lower_case_column": "java.lang.Integer"
+      },
+      "records": [
+        {
+          "MiXeD_CaSe_CoLuMn": 1,
+          "PRIMARY_KEY": 1,
+          "UPPER_CASE_COLUMN": 1,
+          "_example_deleted": false,
+          "_example_synced": "2019-06-24T22:36:21.757Z",
+          "lower_case_column": 1
+        }
+      ]
+    },
+    "wh_prefix_MiXeD_CaSe_ScHeMa.MiXeD_CaSe_TaBlE": {
+      "primaryKeys": [
+        "PRIMARY_KEY"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "MiXeD_CaSe_CoLuMn": "java.lang.Integer",
+        "PRIMARY_KEY": "java.lang.Integer",
+        "UPPER_CASE_COLUMN": "java.lang.Integer",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_synced": "java.time.Instant",
+        "lower_case_column": "java.lang.Integer"
+      },
+      "records": [
+        {
+          "MiXeD_CaSe_CoLuMn": 1,
+          "PRIMARY_KEY": 1,
+          "UPPER_CASE_COLUMN": 1,
+          "_example_deleted": false,
+          "_example_synced": "2019-06-24T22:36:21.608Z",
+          "lower_case_column": 1
+        }
+      ]
+    },
+    "wh_prefix_UPPER_CASE_SCHEMA.UPPER_CASE_TABLE": {
+      "primaryKeys": [
+        "PRIMARY_KEY"
+      ],
+      "foreignKeys": [],
+      "classType": {
+        "MiXeD_CaSe_CoLuMn": "java.lang.Integer",
+        "PRIMARY_KEY": "java.lang.Integer",
+        "UPPER_CASE_COLUMN": "java.lang.Integer",
+        "_example_deleted": "java.lang.Boolean",
+        "_example_synced": "java.time.Instant",
+        "lower_case_column": "java.lang.Integer"
+      },
+      "records": [
+        {
+          "MiXeD_CaSe_CoLuMn": 1,
+          "PRIMARY_KEY": 1,
+          "UPPER_CASE_COLUMN": 1,
+          "_example_deleted": false,
+          "_example_synced": "2019-06-24T22:36:21.813Z",
+          "lower_case_column": 1
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,703 @@
+public class OracleIncrementalUpdaterAgentAdapter extends OracleIncrementalUpdater {
+    public static final ExampleLogger LOG = ExampleLogger.getMainLogger();
+    public static final String CONNECTOR_PATH_PREFIX = "/integrations/oracle/resources/agentintegration/";
+    private static final int MAX_WAIT_FOR_EXTRACTOR_START_IN_SECONDS = 3600;
+    public static final String MP = "[HA]";
+    /**
+     * The shutdown synchronization of the capture among the 4 threads involved. 1. main updater, 2. extractor loop, 3.
+     * capture script, 4. row receiver
+     *
+     * <p>1) main updater sets extractorRunning = false (tells the extractor to stop) 2) the capture thread wait for
+     * both the capture script thread and the row receiver to finish. If extractorRunning is false, the extractor will
+     * set endOfSync = true so that extractor loop will stop and terminate.
+     */
+    private volatile boolean extractorRunning = false;
+
+    private volatile boolean endOfSync = false;
+
+    private boolean lastIncrementalSync;
+    private Future<OracleAgentBinaryReaderException> extractor = null;
+    private final Map<TableRef, Map<String, OracleColumn>> includedTableColumns = new HashMap<>();
+    private Instant lastCheckpoint;
+    private final OracleAgentTool agentTool;
+    private final TimestampCounter tsCounter = new TimestampCounter();
+
+    private static final int MAX_CONSECUTIVE_RETRIES = 3;
+    private int extractorRetryCounter = 0;
+
+    static final int MAX_FILE_SIZE = 100 * 1024 * 1024;
+
+    private static Map<TableRef, AtomicInteger> captureCount = new HashMap<>();
+
+    private final AgentTableObjectMap tableMapper;
+    private Pair<TableRef, Map<String, Object>> savedCapture = null;
+    OracleConnectorContext context;
+    AgentState agentState;
+
+    OracleIncrementalUpdaterAgentAdapter(OracleConnectorContext context, Map<TableRef, List<OracleColumn>> selected) {
+        super(
+                context.getOracleState(),
+                context.getOracleApi(),
+                context.getHashIdGenerator(),
+                context.getOracleOutputHelper(),
+                context.getOracleResyncHelper(),
+                context.getOracleMetricsHelper(),
+                selected);
+        this.context = context;
+        if (context.getAgentTool() == null) {
+            // Always null except called from the test.
+            context.agentTool(new OracleAgentTool(context));
+        }
+        migrateAgentState(this.context.getOracleState());
+        agentTool = context.getAgentTool();
+        agentTool.connectHeartbeat();
+        OracleCredentials creds = context.getCredentials();
+        if (creds.tunnelHost.isPresent()) {
+            agentTool.setupSshTunnelInAgentHub(creds);
+        }
+        tableMapper = new AgentTableObjectMap(HvaDbType.ORACLE);
+
+        for (Map.Entry<TableRef, List<OracleColumn>> tc : selected.entrySet()) {
+            Map<String, OracleColumn> tableColumns = new HashMap<>();
+            tc.getValue().forEach(c -> tableColumns.put(c.name, c));
+            includedTableColumns.put(tc.getKey(), tableColumns);
+        }
+
+        lastCheckpoint = Instant.now();
+    }
+
+    private void migrateAgentState(OracleState state) {
+        if (state.agentState != null) {
+            state.setAgentInited(state.agentState.isAgentInited());
+            state.setPersistAcrossResync(state.agentState.isPersistAcrossResync());
+            state.setHubDbFile(state.agentState.getHubDbFile());
+            state.setHubDbFileContent(state.agentState.getHubDbFileContent());
+            state.setAgentConfFiles(state.agentState.getAgentConfFiles());
+            state.setCapStateFile(state.agentState.getCapStateFile());
+            state.setCapStateFileContent(state.agentState.getCapStateFileContent());
+            state.agentState = null;
+        }
+    }
+
+    @Override
+    public void start() {
+        if (extractor == null) {
+            initReceiver();
+            tableMapper.reset();
+            tableMapper.startReceiver();
+            // Setting up AGENT must begin before the first import.
+            // to make sure the cursor to be well ahead of the import.
+            agentTool.initAgent(false);
+            if (state.getHubDbFile() != null) {
+                waitForHubDbFile();
+                // Checkpoint here if token based agent conf.
+            }
+            OracleCredentials creds = context.getCredentials();
+            // Agent setup mode must be disabled only when all configuration was done and saved.
+            agentTool.disableAgentSetupMode(
+                    creds.agentConfigMethod == null ? "" : creds.agentConfigMethod.toString(),
+                    creds.getAgentHost(),
+                    creds.getAgentPort(),
+                    creds.getAgentToken(),
+                    creds.getAgentUser(),
+                    String.valueOf(creds.getAgentPort()),
+                    creds.getAgentPublicCert());
+
+            // At this point, 1. the agent configuration is done. 2.The hubdb content with agent information
+            // was saved and the agent. 3. setup mode is disabled.
+            initTable();
+            // Make it certain that the hub is configured.
+            state.setAgentInited(true);
+            checkpointIfNeeded(true);
+            agentTool.generateJobScript();
+            // extractor only starts once.
+            ExecutorService extractExecutor = Executors.newSingleThreadExecutor();
+            extractor = extractExecutor.submit(this::extractorLoop);
+            extractExecutor.shutdown();
+            waitForExtractorStart();
+        }
+    }
+
+    private void initTable() {
+        Set<TableRef> iotTables = api.getIotTables();
+        Set<TableRef> rowIdTables =
+                pKeylessTables
+                        .stream()
+                        .filter(t -> !partitionedTablesWithRowMovementEnabled.contains(t) && !iotTables.contains(t))
+                        .collect(Collectors.toSet());
+
+        if (state.earliestUncommitedScn.isPresent()) {
+            setupForMigration();
+        }
+        AgentTableConfigurator configurator =
+                new AgentTableConfigurator(agentTool, tableMapper, includedTableColumns.keySet(), state, rowIdTables);
+        boolean saveConfig =
+                configurator.syncTableConfiguration()
+                        | configurator.removeUnsupportedColumns(api.getUnsupportedColumns());
+
+        if (saveConfig) {
+            agentTool.saveConfig();
+        }
+        waitForCapState();
+        if (state.earliestUncommitedScn.isPresent()) {
+            cleanupLogMinerCursors();
+        }
+        checkpointIfNeeded(true);
+    }
+
+    private void setupForMigration() {
+        Instant earliestUncommitedTimeMinus4secs =
+                api.oracleScn
+                        .convertScnToTimestamp(this.state.earliestUncommitedScn.get())
+                        .minus(4, ChronoUnit.SECONDS);
+        DateTimeFormatter formatter = DateTimeFormatter.ISO_INSTANT.withZone(ZoneId.of("UTC"));
+        agentTool.setFullActivationOption(
+                "-i\""
+                        + formatter.format(earliestUncommitedTimeMinus4secs)
+                        + "\" -I scn="
+                        + this.state.earliestUncommitedScn.get());
+    }
+
+    private void cleanupLogMinerCursors() {
+        state.earliestUncommitedScn = Optional.empty();
+        state.nextReadScn = Optional.empty();
+    }
+
+    private void waitForCapState() {
+        waitForFileReceive(() -> state.getCapStateFile());
+        if (state.getHubDbFile() == null) {
+            throw new OracleAgentBinaryReaderException("Didn't receive Hub DB file from the AGENT after initialization");
+        }
+        if (state.getAgentConfFiles().isEmpty()) {
+            throw new OracleAgentBinaryReaderException(
+                    "Didn't receive enroll file/cache file from the AGENT after initialization");
+        }
+        if (state.getCapStateFile() == null) {
+            throw new OracleAgentBinaryReaderException("Didn't receive cap_state file from the AGENT after initialization");
+        }
+    }
+
+    private void waitForHubDbFile() {
+        waitForFileReceive(() -> state.getHubDbFile());
+    }
+
+    private static void waitForFileReceive(Supplier<String> fileName) {
+        final int TIMEOUT = 120; // seconds
+        final int DELAY_IN_ms = 1_000;
+        final int LOOP_CNT_UNTIL_TIMEOUT = (TIMEOUT * 1000 / DELAY_IN_ms);
+        SleepControl waitForFileReceive = new SleepControl(DELAY_IN_ms);
+        for (int i = 0; i < LOOP_CNT_UNTIL_TIMEOUT && fileName.get() == null; i++) {
+            // check if the configuration information was sent by "ftsavecfg" running in AGENT
+            waitForFileReceive.sleep();
+        }
+    }
+
+    @Override
+    public void stop() {
+        if (!extractorRunning) {
+            return;
+        }
+        waitForExtractorStop();
+    }
+
+    @Override
+    public void close() {
+        stop();
+    }
+
+    void waitForExtractorStart() {
+        SleepControl sleepForExtractorStart = new SleepControl(10);
+        Instant waitUntil = Instant.now().plus(MAX_WAIT_FOR_EXTRACTOR_START_IN_SECONDS, ChronoUnit.SECONDS);
+        do {
+            sleepForExtractorStart.sleep();
+        } while (!extractorRunning && Instant.now().isBefore(waitUntil));
+        if (!extractorRunning) {
+            throw new OracleAgentBinaryReaderException(
+                    "The extract didn't start in " + MAX_WAIT_FOR_EXTRACTOR_START_IN_SECONDS + " seconds.");
+        }
+        new SleepControl(1_000, 1_000, 1).sleep();
+    }
+
+    void waitForExtractorStop() {
+        if (!lastIncrementalSync) {
+            runLastIncrementalSync();
+        }
+    }
+
+    void runLastIncrementalSync() {
+        LOG.info(MP + "Run last incremental sync");
+        SleepControl sleepForExtractorStop = new SleepControl(5_000, 10_000, 2);
+        extractorRunning = false; // signal the extractor to stop.
+        while (true) {
+            lastIncrementalSync = extractor.isDone();
+            doIncrementalWork();
+            if (lastIncrementalSync) {
+                LOG.info(MP + "Detect extractor is done.");
+                OracleAgentBinaryReaderException ex = getExtractorException(extractor);
+                if (ex != null) {
+                    throw new OracleAgentBinaryReaderException(ex.getMessage(), ex);
+                }
+            }
+            if (lastIncrementalSync) {
+                return;
+            }
+            sleepForExtractorStop.sleep();
+        }
+    }
+
+    private OracleAgentBinaryReaderException getExtractorException(Future<OracleAgentBinaryReaderException> extractor) {
+        OracleAgentBinaryReaderException ex;
+        try {
+            ex = extractor.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new OracleAgentBinaryReaderException("Interrupted", e);
+        } catch (ExecutionException e) {
+            return new OracleAgentBinaryReaderException("Execution error.", e);
+        }
+        return ex;
+    }
+
+    private Integer captureScript(RunShell.Shell shell) {
+        Thread.currentThread().setName("capture-script");
+        try {
+            InputStream in = shell.getInputStream();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader((in)))) {
+                StringBuilder sb = new StringBuilder();
+                while (true) {
+                    String msg = reader.readLine();
+                    if (msg == null) {
+                        if (sb.length() == 0) {
+                            break;
+                        }
+                    } else if (msg.endsWith("\\")) {
+                        sb.append(msg, 0, msg.length() - 1);
+                        sb.append('\n');
+                        continue;
+                    } else {
+                        sb.append(msg);
+                    }
+                    String outMsg = sb.toString();
+                    LOG.log(outMsg.contains("F_J") ? Level.WARNING : Level.INFO, MP + outMsg);
+                    long extractVolume = parseCaptureMessage(outMsg);
+                    if (extractVolume > 0) {
+                        updateExtractBlockVolume(extractVolume);
+                    }
+                    sb = new StringBuilder();
+                }
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, MP + "Failed to read script output", e);
+            }
+            RunShell.waitForTheProcessToFinish(shell);
+            int error = shell.waitFor();
+            if (!extractorRunning) {
+                endOfSync = true;
+            }
+            if (error != 0) {
+                LOG.warning(MP + "capture terminated with an error " + error);
+            }
+            return error;
+        } finally {
+            Thread.currentThread().setName("");
+        }
+    }
+
+    static long parseCaptureMessage(String msg) {
+        Pattern regex =
+                Pattern.compile(
+                        ".*(?:Capture cycle )?[Ss]canned \\d+ transactions?(?: +\\((\\d+) bytes?\\))? +from (?:between .+ and )?.+ ago containing \\d+ rows? \\(.*?\\) for \\d+ tables? +(?:from file sequence \\d+ +)?in .+");
+        Matcher matcher = regex.matcher(msg);
+        if (matcher.matches() && matcher.group(1) != null) {
+            return Long.parseLong(matcher.group(1));
+        } else {
+            return 0;
+        }
+    }
+
+    @Override
+    public void resync(TableRef tableRef, String reason, Boolean logEventNow) {
+        resyncHelper.addToResyncSet(tableRef, reason, logEventNow);
+        state.resetTable(tableRef);
+    }
+
+    @Override
+    public void doIncrementalWork() {
+        // The extractor stopped with an error. So process it then fail.
+        if (!lastIncrementalSync && extractor.isDone()) {
+            OracleAgentBinaryReaderException ex = getExtractorException(extractor);
+            if (ex != null) {
+                throw new OracleAgentBinaryReaderException(ex.getMessage(), ex);
+            }
+        }
+    }
+
+    private OracleAgentBinaryReaderException extractorLoop() {
+        OracleAgentBinaryReaderException retEx = null;
+        Thread.currentThread().setName("extractor");
+        try {
+            extractorRunning = true;
+            agentTool.createRemoteFile(state.getCapStateFile(), state.getCapStateFileContent());
+            Future<Integer> capture = agentTool.runCapture(this::captureScript);
+            SleepControl sleepBetweenCaptureScript = new SleepControl(15_000);
+            while (!endOfSync) {
+                int error = capture.get();
+                if (error != 0) {
+                    if (!extractorRunning || ++extractorRetryCounter == MAX_CONSECUTIVE_RETRIES) {
+                        return new OracleAgentBinaryReaderException("Capture script finished with an error " + error);
+                    }
+                    LOG.warning(MP + "Capture returns with error code " + error + ". retrying ...");
+                } else {
+                    LOG.info(MP + "Capture returns = " + error);
+                    extractorRetryCounter = 0;
+                }
+                if (!endOfSync) {
+                    // Before run the capture recreate cap_state based on what we have.
+                    sleepBetweenCaptureScript.sleep();
+                    agentTool.createRemoteFile(state.getCapStateFile(), state.getCapStateFileContent());
+                    capture = agentTool.runCapture(this::captureScript);
+                }
+            }
+            LOG.info(MP + "Extractor loop return.");
+        } catch (Exception e) {
+            retEx = new OracleAgentBinaryReaderException("Capture script finished with an exception", e);
+        } finally {
+            Thread.currentThread().setName("");
+        }
+        return retEx;
+    }
+
+    void initReceiver() {
+        SocketReceiver server = new SocketReceiver("127.0.0.1", AgentTool.getCapturePort());
+        server.start(this::newConnection);
+        AgentTool.setCapturePort(server.getListeningPort());
+    }
+
+    void newConnection(Socket socket) {
+        Thread.currentThread().setName("receiver");
+        LOG.info(MP + "New Connection open.");
+        try {
+            SegmentedInputStream in = new SegmentedInputStream(new BufferedInputStream(socket.getInputStream()));
+            while (true) {
+                int streamType = in.getStreamType();
+                if (streamType == -1) {
+                    LOG.info(MP + "End of the SegmentedInputStream");
+                    return;
+                }
+                switch (AgentMsgType.type(streamType)) {
+                    case MSG_TYPE_FILE:
+                        readFile(in);
+                        break;
+                    case MSG_TYPE_COMMAND:
+                        readCommand(in, socket.getOutputStream());
+                        break;
+                    case MSG_TYPE_BYTES:
+                        in.prStatistic();
+                        readRecord(in);
+                        in.prStatistic();
+                        break;
+                    default:
+                        LOG.warning(MP + "SEGMENTED_STREAM: Unknown message type skipped : " + in.getStreamType());
+                        flushInputStream(in);
+                        break;
+                }
+                in.reopen();
+            }
+        } catch (Exception e) {
+            LOG.log(Level.SEVERE, MP + "SegmentedInputStream error.", e);
+        } finally {
+            try {
+                socket.close();
+            } catch (IOException ex) {
+                LOG.log(Level.WARNING, MP + "Closing socket failed.", ex);
+            }
+            Thread.currentThread().setName("");
+        }
+        checkpointIfNeeded(false);
+    }
+
+    private void readCommand(SegmentedInputStream in, OutputStream out) throws IOException {
+        String commandInput = new String(in.readAllBytes());
+        AgentCommand cmd = new AgentCommand(commandInput);
+        switch (cmd.type) {
+            case SchemaChange:
+            case Resync:
+                AgentAdaptDdlCommand command = AgentAdaptDdlCommand.parse(commandInput);
+                TableRef table = tableMapper.getTableFromObjectName(command.table);
+                processCommand(table, command);
+                break;
+            case Flush:
+                AgentTool.sendFlushed(out);
+                break;
+            case Unknown:
+                throw new OracleAgentBinaryReaderException("Received an unknow command: " + commandInput);
+            case RefrEvStart:
+            case RefrEvFinish:
+            case RefrTblDone:
+            default:
+                throw new OracleAgentBinaryReaderException(
+                        "Received a unsupported command: " + cmd.type + ", parameter: " + cmd.parameter);
+        }
+    }
+
+    private void readRecord(InputStream in) throws IOException {
+        UnSerializer unSerializer = new UnSerializer(in);
+        FTagData data;
+        while (!((data = unSerializer.readFTagData()) instanceof EofFTagData)) {
+            if (data.tag() == FTag.FTAG_TBL_ROW) {
+                TblRowFTagData tableRow = (TblRowFTagData) data;
+                TableRef tableRef = tableMapper.getTableFromObjectName(tableRow.tableName());
+                processCapturedRow(tableRef, tableRow.parseRow());
+            }
+        }
+        // must read one more time to consume the EOF.
+        if (in.read() != -1) {
+            throw new OracleAgentBinaryReaderException("Premature return from the data decoder");
+        }
+    }
+
+    int totalReceived = 0;
+
+    private void flushInputStream(SegmentedInputStream in) throws IOException {
+        byte[] buf = new byte[10240];
+        while (true) {
+            int n = in.read(buf, 0, buf.length);
+            if (n == -1) break;
+            totalReceived += n;
+        }
+    }
+
+    void readFile(SegmentedInputStream in) throws IOException {
+        // read file name length and conver it to host order
+        int b1 = in.read();
+        int b2 = in.read();
+        if (b1 == -1 || b2 == -1) {
+            throw new SegmentedInputStreamException("readFile: b1=" + b1 + " b2:" + b2);
+        }
+        int nameLen = (b1 & 0xff) << 8 | b2;
+        byte[] nameByte = in.readNBytes(nameLen);
+        String fileName = new String(nameByte);
+        // Let us read all bytes into memory up to 100MB.
+        byte[] fileContent = in.readNBytes(MAX_FILE_SIZE);
+        if (fileContent.length == MAX_FILE_SIZE) {
+            while (in.read() != -1) ; // read the remaining bytes.
+            LOG.warning(MP + "The configuration file contents might be truncated.");
+        }
+        // Reuse Map's column name/value to pass fileName/fileContent with table == NULL.
+        saveConfigFile(fileName, fileContent);
+    }
+
+    private void processModifySchemaChange(TableRef table, AgentAdaptDdlCommand.TableChange tableChange) {
+        for (Map.Entry<String, AgentAdaptDdlCommand.Column> entry : tableChange.modifyColumns.entrySet()) {
+            String cName = entry.getKey();
+            AgentAdaptDdlCommand.Column c = entry.getValue();
+            OracleType oracleType = oracleType(c);
+            Optional<DataType> warehouseType = oracleType.getWarehouseType();
+
+            if (warehouseType.isPresent()) {
+                OracleColumn updatedOracleColumn = new OracleColumn(cName, oracleType, false, table, Optional.empty());
+                ColumnType columnType = updatedOracleColumn.asExampleColumn(table.schema).asColumnType();
+
+                OracleColumn existingOracleColumn = includedTableColumns.get(table).get(cName);
+                try {
+                    outputHelper.promoteColumn(table, existingOracleColumn, columnType);
+                } catch (InvalidColumnTypeException e) {
+                    LOG.warning("Type Promotion Skipped: " + e.getMessage());
+                }
+            } else {
+                throw new RuntimeException(
+                        "We can't type promote because of unsupported datatype: ColumnName: "
+                                + cName
+                                + ", dataType: "
+                                + c.dbDataType);
+            }
+        }
+    }
+
+    private void processAddSchemaChange(TableRef table, AgentAdaptDdlCommand.TableChange tableChange) {
+        for (Map.Entry<String, AgentAdaptDdlCommand.Column> entry : tableChange.addColumns.entrySet()) {
+            String cName = entry.getKey();
+            AgentAdaptDdlCommand.Column c = entry.getValue();
+            OracleType oracleType = oracleType(c);
+            Optional<DataType> warehouseType = oracleType.getWarehouseType();
+
+            if (warehouseType.isPresent()) {
+                // It is required to be set in UpdateSchemaOperation which should be destination side format
+                TableRef destinationTableRef = outputHelper.tableRefWithSchemaPrefix(table);
+                OracleColumn oracleColumn = new OracleColumn(cName, oracleType, false, table, Optional.empty());
+                ColumnType columnType = outputHelper.existingTableDefinition(table).types.get(cName);
+
+                boolean foundOnlyInLogs = false;
+                if (columnType == null) {
+                    columnType = oracleColumn.asExampleColumn(table.schema).asColumnType();
+                    foundOnlyInLogs = true;
+                }
+                if (outputHelper.syncModes().getOrDefault(table, SyncMode.Legacy) == SyncMode.History) {
+                    outputHelper.updateSchema(
+                            table,
+                            new AddColumnHistoryModeOperation(
+                                    destinationTableRef, cName, columnType, tableChange.ddlTimestamp));
+                } else {
+                    outputHelper.updateSchema(
+                            table, new AddColumnLiveModeOperation(destinationTableRef, cName, columnType));
+                }
+                if (foundOnlyInLogs) {
+                    includedTables.get(table).add(oracleColumn);
+                    includedTableColumns.get(table).put(cName, oracleColumn);
+                }
+            } else {
+                LOG.warning("Found unsupported data type: columnName: " + cName + ", dataType: " + c.dbDataType);
+            }
+        }
+    }
+
+    private void processDropSchemaChange(TableRef table, AgentAdaptDdlCommand.TableChange tableChange) {
+        // It is required to be set in UpdateSchemaOperation which should be destination side format
+        TableRef destinationTableRef = outputHelper.tableRefWithSchemaPrefix(table);
+        for (String delete : tableChange.deleteColumns) {
+            if (outputHelper.syncModes().getOrDefault(table, SyncMode.Legacy) == SyncMode.History) {
+                outputHelper.updateSchema(
+                        table,
+                        new DropColumnHistoryModeOperation(destinationTableRef, delete, tableChange.ddlTimestamp));
+            } else {
+                outputHelper.updateSchema(table, new DropColumnLiveModeOperation(destinationTableRef, delete));
+            }
+        }
+    }
+
+    private OracleType oracleType(AgentAdaptDdlCommand.Column c) {
+        return OracleType.create(c.dbDataType.toUpperCase(), (int) c.bytelen, c.prec, c.scale, -1, false, true);
+    }
+
+    void processCommand(TableRef table, AgentAdaptDdlCommand command) {
+        if (command.isResync()) {
+            AgentAdaptDdlCommand.Resync resync = (AgentAdaptDdlCommand.Resync) command.change;
+            resync(table, resync.reason, true);
+        } else if (command.isSchemaChange()) {
+            AgentAdaptDdlCommand.TableChange tableChange = (AgentAdaptDdlCommand.TableChange) command.change;
+            processAddSchemaChange(table, tableChange);
+            processModifySchemaChange(table, tableChange);
+            processDropSchemaChange(table, tableChange);
+        } else {
+            throw new UnsupportedOperationException("Unsupported DDL command type: " + command.type);
+        }
+    }
+
+    private void saveConfigFile(String file, byte[] content) {
+        if (file.endsWith(".cap_state")) {
+            state.setCapStateFile(file);
+            state.setCapStateFileContent(content);
+            checkpointIfNeeded(true);
+        } else if (file.endsWith("hubdb.sql.gz")) {
+            BasicCipherAdapter basicCipherAdapter = new BasicCipherAdapter(context.getEncryptionKey());
+            state.setHubDbFile(file);
+            state.setHubDbFileContent(basicCipherAdapter.encrypt(content));
+        } else {
+            if (state.getAgentConfFiles() == null) {
+                state.setAgentConfFiles(new HashMap<>());
+            }
+            state.getAgentConfFiles().put(file, content);
+        }
+    }
+
+    private void checkpointIfNeeded(boolean force) {
+        if (force || Duration.between(lastCheckpoint, Instant.now()).getSeconds() >= 60) {
+            captureCount.forEach((key, value) -> LOG.info(MP + "CAPTURE_COUNT: " + key + " = " + value.get()));
+            lastCheckpoint = Instant.now();
+            outputHelper.checkpoint(state);
+        }
+    }
+
+    private static AgentOp parseAgentOp(Map<String, Object> row) {
+        if (row.get("AGENT_OP") != null) {
+            return AgentOp.withInteger(Integer.parseInt(row.get("AGENT_OP").toString()));
+        } else if (row.get("agent_op") != null) {
+            return AgentOp.withInteger(Integer.parseInt(row.get("agent_op").toString()));
+        } else {
+            throw new OracleAgentBinaryReaderException(("Found no agent_opt"));
+        }
+    }
+
+    private void processCapturedRow(TableRef table, Map<String, Object> row) {
+        captureCount.computeIfAbsent(table, __ -> new AtomicInteger(0)).incrementAndGet();
+        AgentOp agentOp = parseAgentOp(row);
+
+        if (!includedTableColumns.containsKey(table)) {
+            throw new IllegalStateException(
+                    "Capture Script should never send results for excluded/unknown tables: " + table);
+        }
+        if (agentOp == AgentOp.AGENT_OP_BEFORE_UPDATE || agentOp == AgentOp.AGENT_OP_BEFORE_KEY_UPDATE) {
+            if (savedCapture != null) {
+                throw new OracleAgentBinaryReaderException("BEFORE UPDATE row is overwritten by a new before update row");
+            }
+            savedCapture = new Pair<>(table, row);
+            return;
+        }
+        Map<String, Object> oldRow = null;
+        if (savedCapture != null) {
+            if (agentOp != AgentOp.AGENT_OP_UPDATE || !table.equals(savedCapture.left)) {
+                throw new OracleAgentBinaryReaderException(
+                        "AgentOp, "
+                                + agentOp.getOp()
+                                + ", is not followed by an AGENT_OP_UPDATE of the same table: the saved table = "
+                                + savedCapture.left
+                                + " new table = "
+                                + table);
+            }
+            oldRow = savedCapture.right;
+            savedCapture = null;
+        }
+        if (agentOp == AgentOp.AGENT_OP_TRUNCATE) {
+            // trigger soft delete
+            outputHelper.preImportDelete(table, Instant.now());
+            LOG.customerWarning(InfoEvent.of("TRUNCATE DDL", "Encountered TRUNCATE DDL for " + table));
+            checkpointIfNeeded(false);
+            return;
+        }
+        List<OracleColumn> columns = includedTables.get(table);
+        Optional<RowPrimaryKeys> maybeRowPrimaryKeys = Optional.empty();
+        List<OracleColumn> pkeyList = getPkeyList(table, columns);
+        if (agentOp == AgentOp.AGENT_OP_UPDATE) {
+            if (oldRow == null) {
+                // update without before image. This is when a row with pkey had an update on non-key columns
+                maybeRowPrimaryKeys = Optional.of(buildPkeys(pkeyList, row, row));
+            } else {
+                maybeRowPrimaryKeys = Optional.of(buildPkeys(pkeyList, row, oldRow));
+            }
+        }
+
+        ChangeType changeType = changeTypeFromAgentOp(agentOp);
+        if (changeType == null) {
+            return;
+        }
+        String rowId = row.get(Names.EXAMPLE_ID_COLUMN) == null ? null : (String) row.get(Names.EXAMPLE_ID_COLUMN);
+        Instant opTime = tsCounter.getValue((Instant) row.get(AgentTool.AGENT_CAP_TIMESTAMP));
+
+        forEachChange(
+                table,
+                rowId,
+                deleteAgentColumn(row, includedTableColumns.get(table)),
+                changeType,
+                opTime,
+                maybeRowPrimaryKeys,
+                includedTables);
+        checkpointIfNeeded(false);
+    }
+
+    private static Map<String, Object> deleteAgentColumn(Map<String, Object> row, Map<String, OracleColumn> columns) {
+        row.entrySet().removeIf(e -> !columns.containsKey(e.getKey()));
+        return row;
+    }
+
+    private static ChangeType changeTypeFromAgentOp(AgentOp agentOp) {
+        switch (agentOp) {
+            case AGENT_OP_INSERT:
+                return ChangeType.INSERT;
+            case AGENT_OP_DELETE:
+                return ChangeType.DELETE;
+            case AGENT_OP_UPDATE:
+                return ChangeType.UPDATE;
+            default:
+                throw new OracleAgentBinaryReaderException("Unknown change type " + agentOp);
+        }
+    }
+}

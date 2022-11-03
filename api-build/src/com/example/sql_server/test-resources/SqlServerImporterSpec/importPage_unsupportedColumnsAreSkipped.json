@@ -1,0 +1,21 @@
+{
+  "warningMap" : { },
+  "tables" : {
+    "wh_prefix_default_schema.default_table" : {
+      "primaryKeys" : [ "_example_id" ],
+      "foreignKeys" : [ ],
+      "classType" : {
+        "_example_deleted" : "java.lang.Boolean",
+        "_example_id" : "java.lang.String",
+        "_example_synced" : "java.time.Instant",
+        "id" : "java.lang.Integer"
+      },
+      "records" : [ {
+        "_example_deleted" : false,
+        "_example_id" : "TonYGi5vtL4leNJF/YURwfStC1g=",
+        "_example_synced" : "2020-01-11T02:27:31.265Z",
+        "id" : 1
+      } ]
+    }
+  }
+}

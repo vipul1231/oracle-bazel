@@ -1,0 +1,19 @@
+{
+  "warningMap" : { },
+  "tables" : {
+    "wh_prefix_default_schema.default_table" : {
+      "primaryKeys" : [ "binary_pkey" ],
+      "foreignKeys" : [ ],
+      "classType" : {
+        "_example_deleted" : "java.lang.Boolean",
+        "_example_synced" : "java.time.Instant",
+        "binary_pkey" : "com.google.protobuf.ByteString"
+      },
+      "records" : [ {
+        "_example_deleted" : false,
+        "_example_synced" : "2020-06-25T10:57:55.608Z",
+        "binary_pkey" : [ 0, 0, 0, 0, 0, 1 ]
+      } ]
+    }
+  }
+}
